@@ -1,4 +1,4 @@
-# Khattak PRO Bot - Binance + GOLD + SILVER - 35 Lakh Points - Signal Only
+# Khattak PRO Bot - FINAL FIX - 35 Lakh Points
 import os
 import requests
 from flask import Flask, request, jsonify
@@ -10,6 +10,7 @@ RISK_PERCENT = 2
 
 def get_live_price(symbol):
     symbol = symbol.upper().strip()
+    # GOLD
     if symbol in ["GOLD", "XAU", "XAUUSD", "PAXG", "GOLDUSDT"]:
         try:
             url = "https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT"
@@ -25,6 +26,7 @@ def get_live_price(symbol):
                 return price, [price]*50, "XAUUSD (GOLD Spot)"
             except Exception as e:
                 return None, None, str(e)
+    # SILVER
     if symbol in ["SILVER", "XAG", "XAGUSD", "SILVERUSDT"]:
         try:
             s = requests.get("https://api.gold-api.com/price/XAG", timeout=10).json()
@@ -33,6 +35,7 @@ def get_live_price(symbol):
             return price, closes, "XAGUSD (SILVER Spot)"
         except Exception as e:
             return None, None, str(e)
+    # CRYPTO
     try:
         clean = symbol.replace("USDT","").strip()
         bin_symbol = clean + "USDT"
@@ -51,30 +54,18 @@ def build_signal(price, closes):
     avg_50 = sum(closes) / len(closes)
     if price > avg_20 and avg_20 > avg_50:
         signal = "BUY"
-        entry = price
-        sl = entry * 0.97
-        tp1 = entry * 1.02
-        tp2 = entry * 1.04
-        tp3 = entry * 1.08
+        entry, sl, tp1, tp2, tp3 = price, price*0.97, price*1.02, price*1.04, price*1.08
     elif price < avg_20:
         signal = "SELL"
-        entry = price
-        sl = entry * 1.03
-        tp1 = entry * 0.98
-        tp2 = entry * 0.96
-        tp3 = entry * 0.92
+        entry, sl, tp1, tp2, tp3 = price, price*1.03, price*0.98, price*0.96, price*0.92
     else:
         signal = "HOLD"
-        entry = price
-        sl = entry * 0.98
-        tp1 = entry * 1.02
-        tp2 = entry * 1.04
-        tp3 = entry * 1.06
+        entry, sl, tp1, tp2, tp3 = price, price*0.98, price*1.02, price*1.04, price*1.06
     return signal, entry, sl, tp1, tp2, tp3
 
 @app.route('/')
 def home():
-    return f"<h2>Khattak Bot LIVE GOLD + SILVER + CRYPTO</h2><p>Capital: {CAPITAL_POINTS} Points</p><p>Use: /check?coin=GOLD<br>/check?coin=SILVER<br>/check?coin=BTC<br>/check?coin=SHIB</p>"
+    return f"<h2>✅ Khattak Bot LIVE - GOLD + SILVER + CRYPTO</h2><p>Capital: {CAPITAL_POINTS} Points</p><p>Use: /check?coin=GOLD | SILVER | BTC | ETH | SOL | SHIB</p>"
 
 @app.route('/check')
 def check():
@@ -101,5 +92,5 @@ def check():
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
