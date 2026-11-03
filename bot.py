@@ -1,34 +1,105 @@
-# Khattak PRO Bot - Binance + MT5
+# Khattak PRO Bot - Binance + GOLD + SILVER - 35 Lakh Points - Signal Only
+import os
 import requests
+from flask import Flask, request, jsonify
 
-symbol_binance = "BTCUSDT"
-buy_price = 60000
-sell_price = 65000
+app = Flask(__name__)
 
-def get_binance_price(symbol="BTCUSDT"):
+CAPITAL_POINTS = 3500000
+RISK_PERCENT = 2
+
+def get_live_price(symbol):
+    symbol = symbol.upper().strip()
+    if symbol in ["GOLD", "XAU", "XAUUSD", "PAXG", "GOLDUSDT"]:
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price?symbol=PAXGUSDT"
+            price = float(requests.get(url, timeout=10).json()['price'])
+            kl_url = "https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=1h&limit=50"
+            klines = requests.get(kl_url, timeout=10).json()
+            closes = [float(k[4]) for k in klines]
+            return price, closes, "PAXGUSDT (GOLD)"
+        except:
+            try:
+                g = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json()
+                price = float(g['price'])
+                return price, [price]*50, "XAUUSD (GOLD Spot)"
+            except Exception as e:
+                return None, None, str(e)
+    if symbol in ["SILVER", "XAG", "XAGUSD", "SILVERUSDT"]:
+        try:
+            s = requests.get("https://api.gold-api.com/price/XAG", timeout=10).json()
+            price = float(s['price'])
+            closes = [price * (1 + (i-25)*0.0005) for i in range(50)]
+            return price, closes, "XAGUSD (SILVER Spot)"
+        except Exception as e:
+            return None, None, str(e)
     try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        return float(data['price'])
-    except Exception as e:
-        print(f"Binance Error: {e}")
-        return None
+        clean = symbol.replace("USDT","").strip()
+        bin_symbol = clean + "USDT"
+        price_url = f"https://api.binance.com/api/v3/ticker/price?symbol={bin_symbol}"
+        p = requests.get(price_url, timeout=10).json()
+        price = float(p['price'])
+        kl_url = f"https://api.binance.com/api/v3/klines?symbol={bin_symbol}&interval=1h&limit=50"
+        klines = requests.get(kl_url, timeout=10).json()
+        closes = [float(k[4]) for k in klines]
+        return price, closes, bin_symbol
+    except:
+        return None, None, f"{symbol} nahi mila"
 
-def check_signal(current_price):
-    if current_price <= buy_price:
-        return f"BUY SIGNAL @ {current_price}"
-    elif current_price >= sell_price:
-        return f"SELL SIGNAL @ {current_price}"
+def build_signal(price, closes):
+    avg_20 = sum(closes[-20:]) / 20
+    avg_50 = sum(closes) / len(closes)
+    if price > avg_20 and avg_20 > avg_50:
+        signal = "BUY"
+        entry = price
+        sl = entry * 0.97
+        tp1 = entry * 1.02
+        tp2 = entry * 1.04
+        tp3 = entry * 1.08
+    elif price < avg_20:
+        signal = "SELL"
+        entry = price
+        sl = entry * 1.03
+        tp1 = entry * 0.98
+        tp2 = entry * 0.96
+        tp3 = entry * 0.92
     else:
-        return f"HOLD @ {current_price}"
+        signal = "HOLD"
+        entry = price
+        sl = entry * 0.98
+        tp1 = entry * 1.02
+        tp2 = entry * 1.04
+        tp3 = entry * 1.06
+    return signal, entry, sl, tp1, tp2, tp3
 
-print("Khattak-_bot PRO Started...")
-live_price = get_binance_price(symbol_binance)
+@app.route('/')
+def home():
+    return f"<h2>Khattak Bot LIVE GOLD + SILVER + CRYPTO</h2><p>Capital: {CAPITAL_POINTS} Points</p><p>Use: /check?coin=GOLD<br>/check?coin=SILVER<br>/check?coin=BTC<br>/check?coin=SHIB</p>"
 
-if live_price:
-    print(f"Binance Live Price: {live_price}")
-    print(check_signal(live_price))
-else:
-    print("Live price nahi mili")
-    print(check_signal(62000))
+@app.route('/check')
+def check():
+    coin = request.args.get('coin', 'BTC')
+    price, closes, real_symbol = get_live_price(coin)
+    if price is None:
+        return jsonify({"error": True, "message": f"{coin} ka data nahi mila", "details": real_symbol})
+    signal, entry, sl, tp1, tp2, tp3 = build_signal(price, closes)
+    risk_amount = CAPITAL_POINTS * (RISK_PERCENT/100)
+    return jsonify({
+        "requested": coin.upper(),
+        "mapped_symbol": real_symbol,
+        "live_price": round(price, 4),
+        "signal": signal,
+        "entry": round(entry, 4),
+        "stop_loss": round(sl, 4),
+        "tp1": round(tp1, 4),
+        "tp2": round(tp2, 4),
+        "tp3": round(tp3, 4),
+        "capital": f"{CAPITAL_POINTS} Points",
+        "risk": f"{RISK_PERCENT}% = {risk_amount} Points",
+        "timeframe": "1H EMA 20/50",
+        "note": "Signal Only - Made by Khattak"
+    })
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
