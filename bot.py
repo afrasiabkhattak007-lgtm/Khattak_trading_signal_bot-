@@ -15,7 +15,7 @@ set_webhook()
 def send(chat_id, text):
     requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
 
-# --- 16 COINS FINAL LIST ---
+# --- 16 COINS FINAL LIST - FIXED ---
 SYMBOL_MAP = {
     "ETH/USDT": "ETHUSDT", "ETH": "ETHUSDT",
     "BNB/USDT": "BNBUSDT", "BNB": "BNBUSDT",
@@ -23,7 +23,7 @@ SYMBOL_MAP = {
     "TRX/USDT": "TRXUSDT", "TRX": "TRXUSDT",
     "TON/USDT": "TONUSDT", "TON": "TONUSDT",
     "TRUMP/USDT": "TRUMPUSDT", "TRUMP": "TRUMPUSDT",
-    "BANANA GUN/USDT": "BANANAUSDT", "BANANA GUN": "BANANAUSDT", "BANANA": "BANANAUSDT",
+    "BANANA GUN/USDT": "BANANAS31USDT", "BANANA GUN": "BANANAS31USDT", "BANANA": "BANANAS31USDT",
     "BTC/USDT": "BTCUSDT", "BTC": "BTCUSDT",
     "GRAM/USDT": "GRAMUSDT", "GRAM": "GRAMUSDT",
     "SUI/USDT": "SUIUSDT", "SUI": "SUIUSDT",
@@ -36,10 +36,10 @@ SYMBOL_MAP = {
 }
 
 def get_signal_and_price(sym):
+    price = 0
     try:
-        # GOLD / SILVER
         if sym == "GOLD":
-            r = requests.get("https://api.gold-api.com/price/XAU", timeout=5).json()
+            r = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json()
             price = float(r['price'])
             change = float(r.get('ch', 0))
             if change > 5: signal, color = "BUY", "🟢 GREEN"
@@ -48,7 +48,7 @@ def get_signal_and_price(sym):
             return price, signal, color
             
         if sym == "SILVER":
-            r = requests.get("https://api.gold-api.com/price/XAG", timeout=5).json()
+            r = requests.get("https://api.gold-api.com/price/XAG", timeout=10).json()
             price = float(r['price'])
             change = float(r.get('ch', 0))
             if change > 0.2: signal, color = "BUY", "🟢 GREEN"
@@ -56,41 +56,44 @@ def get_signal_and_price(sym):
             else: signal, color = "WAIT", "🟡 YELLOW"
             return price, signal, color
 
-        # CRYPTO - Binance se EMA Signal
-        price_data = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={sym}", timeout=5).json()
+        # FIXED URL
+        price_data = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={sym}", timeout=10).json()
         price = float(price_data['price'])
         
-        klines = requests.get(f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1h&limit=50", timeout=5).json()
-        closes = [float(k[4]) for k in klines]
-        
-        # EMA 20 vs EMA 50 ka simple formula
-        ema20 = sum(closes[-20:]) / 20
-        ema50 = sum(closes[-50:]) / 50
-        
-        if price > ema20 and ema20 > ema50:
-            signal, color = "BUY", "🟢 GREEN LIGHT"
-        elif price < ema20 and ema20 < ema50:
-            signal, color = "SELL", "🔴 RED LIGHT"
-        else:
+        try:
+            klines = requests.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1h&limit=50", timeout=10).json()
+            closes = [float(k[4]) for k in klines]
+            ema20 = sum(closes[-20:]) / 20
+            ema50 = sum(closes[-50:]) / 50
+            if price > ema20 and ema20 > ema50:
+                signal, color = "BUY", "🟢 GREEN LIGHT"
+            elif price < ema20 and ema20 < ema50:
+                signal, color = "SELL", "🔴 RED LIGHT"
+            else:
+                signal, color = "WAIT", "🟡 YELLOW LIGHT"
+        except:
             signal, color = "WAIT", "🟡 YELLOW LIGHT"
             
         return price, signal, color
     except Exception as e:
-        print(e)
+        print(f"Error {sym}: {e}")
+        if price != 0:
+            return price, "WAIT", "🟡 YELLOW LIGHT"
         return None, None, None
 
 def find_symbol(user_text):
     txt = user_text.upper().replace("/CHECK", "").strip()
+    if txt in SYMBOL_MAP:
+        return SYMBOL_MAP[txt], txt
     txt_ns = txt.replace(" ", "").replace("/", "")
     for key, val in SYMBOL_MAP.items():
-        key_ns = key.replace(" ", "").replace("/", "")
-        if key in txt or key_ns == txt_ns:
+        if key.replace(" ", "").replace("/", "") == txt_ns:
             return val, key
     return None, None
 
 @app.route('/')
 def home():
-    return "✅ Khattak Bot LIVE - 16 Coins + Traffic Lights"
+    return "✅ Khattak Bot LIVE - 16 Coins + Traffic Lights - FIXED"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -105,21 +108,12 @@ def webhook():
 💰 Capital: 35 Lakh
 
 <b>Commands:</b>
-/check ETH/USDT
-/check BNB/USDT
-/check SOL/USDT
-/check TRX/USDT
-/check TON/USDT
-/check TRUMP/USDT
-/check BANANA GUN/USDT
-/check BTC/USDT
-/check GRAM/USDT
-/check SUI/USDT
-/check DOGE/USDT
-/check LA/USDT
-/check SHIB/USDT
-/check NOT/USDT
-/check SILVER
+/check ETH
+/check BNB
+/check SOL
+/check DOGE
+/check SUI
+/check NOT
 /check GOLD
 
 🟢 BUY = Green Light
@@ -140,12 +134,12 @@ def webhook():
                 tp2 = price * 1.04
                 msg = (
                     f"📊 <b>{orig}</b>\n"
-                    f"Price: {price:.4f}\n\n"
+                    f"Price: {price:.6f}\n\n"
                     f"{color}\n"
                     f"<b>Signal: {signal}</b>\n\n"
-                    f"SL: {sl:.4f}\n"
-                    f"TP1: {tp1:.4f}\n"
-                    f"TP2: {tp2:.4f}\n"
+                    f"SL: {sl:.6f}\n"
+                    f"TP1: {tp1:.6f}\n"
+                    f"TP2: {tp2:.6f}\n"
                 )
                 send(chat_id, msg)
     return jsonify(ok=True)
