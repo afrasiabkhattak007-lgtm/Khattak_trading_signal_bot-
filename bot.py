@@ -1,148 +1,266 @@
-# ---------------- CANDLE PATTERNS ----------------
 
 def candle_pattern(df):
-    if len(df) < 3:
-        return "No clear pattern"
+    """
+    Detects 20 candlestick patterns using completed candles only.
+    Requires OHLC columns: open, high, low, close.
+    """
 
-    a = df.iloc[-1]  # aaj wali candle
-    b = df.iloc[-2]  # kal wali candle
-    c = df.iloc[-3]  # parson wali candle
+    if df is None or len(df) < 5:
+        return "Insufficient Candle Data"
 
-    def body(x):
-        return abs(x["close"] - x["open"])
-    def candle_range(x):
-        return max(x["high"] - x["low"], 1e-12)
-    def upper_wick(x):
-        return x["high"] - max(x["open"], x["close"])
-    def lower_wick(x):
-        return min(x["open"], x["close"]) - x["low"]
-    def is_bullish(x):
-        return x["close"] > x["open"]
-    def is_bearish(x):
-        return x["close"] < x["open"]
+    # Last three completed candles
+    a = df.iloc[-1]
+    b = df.iloc[-2]
+    c = df.iloc[-3]
 
-    # --- 1. Engulfing ---
+    def candle_parts(x):
+        body = abs(x["close"] - x["open"])
+        rng = max(x["high"] - x["low"], 1e-12)
+        upper = x["high"] - max(x["open"], x["close"])
+        lower = min(x["open"], x["close"]) - x["low"]
+
+        return body, rng, upper, lower
+
+    body, rng, upper, lower = candle_parts(a)
+    b_body, b_rng, b_upper, b_lower = candle_parts(b)
+    c_body, c_rng, c_upper, c_lower = candle_parts(c)
+
+    bullish = a["close"] > a["open"]
+    bearish = a["close"] < a["open"]
+
+    b_bullish = b["close"] > b["open"]
+    b_bearish = b["close"] < b["open"]
+
+    c_bullish = c["close"] > c["open"]
+    c_bearish = c["close"] < c["open"]
+
+    # Previous trend approximation
+    previous = df.iloc[-5:-2]
+    previous_down = (
+        previous["close"].iloc[-1] < previous["close"].iloc[0]
+    )
+    previous_up = (
+        previous["close"].iloc[-1] > previous["close"].iloc[0]
+    )
+
+    # 1. Hammer
+    hammer = (
+        lower >= max(body * 2, rng * 0.55)
+        and upper <= rng * 0.15
+        and body / rng <= 0.35
+        and previous_down
+    )
+
+    # 2. Hanging Man
+    hanging_man = (
+        lower >= max(body * 2, rng * 0.55)
+        and upper <= rng * 0.15
+        and body / rng <= 0.35
+        and previous_up
+    )
+
+    # 3. Inverted Hammer
+    inverted_hammer = (
+        upper >= max(body * 2, rng * 0.55)
+        and lower <= rng * 0.15
+        and body / rng <= 0.35
+        and previous_down
+    )
+
+    # 4. Shooting Star
+    shooting_star = (
+        upper >= max(body * 2, rng * 0.55)
+        and lower <= rng * 0.15
+        and body / rng <= 0.35
+        and previous_up
+    )
+
+    # 5. Doji
+    doji = body / rng <= 0.10
+
+    # 6. Gravestone Doji
+    gravestone_doji = (
+        body / rng <= 0.10
+        and upper / rng >= 0.65
+        and lower / rng <= 0.10
+    )
+
+    # 7. Dragonfly Doji
+    dragonfly_doji = (
+        body / rng <= 0.10
+        and lower / rng >= 0.65
+        and upper / rng <= 0.10
+    )
+
+    # 8. Spinning Top
+    spinning_top = (
+        body / rng <= 0.35
+        and upper > body
+        and lower > body
+        and not doji
+    )
+
+    # 9. Bullish Engulfing
     bullish_engulfing = (
-        is_bearish(b) and is_bullish(a)
+        b_bearish and bullish
         and a["open"] <= b["close"]
         and a["close"] >= b["open"]
+        and body > b_body
     )
+
+    # 10. Bearish Engulfing
     bearish_engulfing = (
-        is_bullish(b) and is_bearish(a)
+        b_bullish and bearish
         and a["open"] >= b["close"]
         and a["close"] <= b["open"]
+        and body > b_body
     )
-    if bullish_engulfing:
-        return "Bullish Engulfing"
-    if bearish_engulfing:
-        return "Bearish Engulfing"
 
-    # --- 2. Harami ---
+    # 11. Bullish Harami
     bullish_harami = (
-        is_bearish(b) and is_bullish(a)
+        b_bearish and bullish
         and a["open"] > b["close"]
         and a["close"] < b["open"]
-        and body(a) < body(b)
+        and body < b_body
     )
+
+    # 12. Bearish Harami
     bearish_harami = (
-        is_bullish(b) and is_bearish(a)
-        and a["open"] < b["close"]
-        and a["close"] > b["open"]
-        and body(a) < body(b)
+        b_bullish and bearish
+        and a["open"] > b["close"]
+        and a["close"] < b["open"]
+        and body < b_body
     )
-    if bullish_harami:
-        return "Bullish Harami"
-    if bearish_harami:
-        return "Bearish Harami"
 
-    # --- 3. Morning Star / Evening Star ---
+    # 13. Morning Star
     morning_star = (
-        is_bearish(c) and body(c) > candle_range(c) * 0.6
-        and body(b) < candle_range(b) * 0.3
-        and is_bullish(a) and a["close"] > (c["open"] + c["close"]) / 2
+        c_bearish
+        and c_body / c_rng >= 0.50
+        and b_body / b_rng <= 0.30
+        and bullish
+        and a["close"] > (c["open"] + c["close"]) / 2
     )
+
+    # 14. Evening Star
     evening_star = (
-        is_bullish(c) and body(c) > candle_range(c) * 0.6
-        and body(b) < candle_range(b) * 0.3
-        and is_bearish(a) and a["close"] < (c["open"] + c["close"]) / 2
+        c_bullish
+        and c_body / c_rng >= 0.50
+        and b_body / b_rng <= 0.30
+        and bearish
+        and a["close"] < (c["open"] + c["close"]) / 2
     )
-    if morning_star:
-        return "Morning Star"
-    if evening_star:
-        return "Evening Star"
 
-    # --- 4. Three White Soldiers / Three Black Crows ---
-    three_white = (
-        is_bullish(c) and is_bullish(b) and is_bullish(a)
-        and b["close"] > c["close"] and a["close"] > b["close"]
+    # 15. Three White Soldiers
+    three_white_soldiers = (
+        len(df) >= 3
+        and all(df["close"].iloc[-i] > df["open"].iloc[-i]
+                for i in [1, 2, 3])
+        and df["close"].iloc[-1] > df["close"].iloc[-2]
+        and df["close"].iloc[-2] > df["close"].iloc[-3]
     )
-    three_black = (
-        is_bearish(c) and is_bearish(b) and is_bearish(a)
-        and b["close"] < c["close"] and a["close"] < b["close"]
-    )
-    if three_white:
-        return "Three White Soldiers"
-    if three_black:
-        return "Three Black Crows"
 
-    # --- 5. Piercing Line / Dark Cloud Cover ---
-    piercing = (
-        is_bearish(b) and is_bullish(a)
-        and a["open"] < b["low"]
+    # 16. Three Black Crows
+    three_black_crows = (
+        len(df) >= 3
+        and all(df["close"].iloc[-i] < df["open"].iloc[-i]
+                for i in [1, 2, 3])
+        and df["close"].iloc[-1] < df["close"].iloc[-2]
+        and df["close"].iloc[-2] < df["close"].iloc[-3]
+    )
+
+    # 17. Piercing Line
+    piercing_line = (
+        b_bearish and bullish
+        and a["open"] < b["close"]
         and a["close"] > (b["open"] + b["close"]) / 2
+        and a["close"] < b["open"]
     )
-    dark_cloud = (
-        is_bullish(b) and is_bearish(a)
-        and a["open"] > b["high"]
+
+    # 18. Dark Cloud Cover
+    dark_cloud_cover = (
+        b_bullish and bearish
+        and a["open"] > b["close"]
         and a["close"] < (b["open"] + b["close"]) / 2
+        and a["close"] > b["open"]
     )
-    if piercing:
-        return "Piercing Line"
-    if dark_cloud:
-        return "Dark Cloud Cover"
 
-    # --- 6. Tweezer Top / Tweezer Bottom ---
-    # Dono candles ka high ya low taqreeban barabar ho
+    # 19. Tweezer Top
     tweezer_top = (
-        is_bullish(b) and is_bearish(a)
-        and abs(b["high"] - a["high"]) < candle_range(b) * 0.05
+        b_bullish and bearish
+        and abs(a["high"] - b["high"]) <= b_rng * 0.10
+        and previous_up
     )
+
+    # 20. Tweezer Bottom
     tweezer_bottom = (
-        is_bearish(b) and is_bullish(a)
-        and abs(b["low"] - a["low"]) < candle_range(b) * 0.05
+        b_bearish and bullish
+        and abs(a["low"] - b["low"]) <= b_rng * 0.10
+        and previous_down
     )
+
+    patterns = []
+
+    if hammer:
+        patterns.append("Hammer - Bullish")
+
+    if hanging_man:
+        patterns.append("Hanging Man - Bearish")
+
+    if inverted_hammer:
+        patterns.append("Inverted Hammer - Bullish")
+
+    if shooting_star:
+        patterns.append("Shooting Star - Bearish")
+
+    if gravestone_doji:
+        patterns.append("Gravestone Doji - Bearish")
+
+    if dragonfly_doji:
+        patterns.append("Dragonfly Doji - Bullish")
+
+    if doji and not gravestone_doji and not dragonfly_doji:
+        patterns.append("Doji - Neutral")
+
+    if spinning_top:
+        patterns.append("Spinning Top - Neutral")
+
+    if bullish_engulfing:
+        patterns.append("Bullish Engulfing")
+
+    if bearish_engulfing:
+        patterns.append("Bearish Engulfing")
+
+    if bullish_harami:
+        patterns.append("Bullish Harami")
+
+    if bearish_harami:
+        patterns.append("Bearish Harami")
+
+    if morning_star:
+        patterns.append("Morning Star - Bullish")
+
+    if evening_star:
+        patterns.append("Evening Star - Bearish")
+
+    if three_white_soldiers:
+        patterns.append("Three White Soldiers - Bullish")
+
+    if three_black_crows:
+        patterns.append("Three Black Crows - Bearish")
+
+    if piercing_line:
+        patterns.append("Piercing Line - Bullish")
+
+    if dark_cloud_cover:
+        patterns.append("Dark Cloud Cover - Bearish")
+
     if tweezer_top:
-        return "Tweezer Top"
+        patterns.append("Tweezer Top - Bearish")
+
     if tweezer_bottom:
-        return "Tweezer Bottom"
+        patterns.append("Tweezer Bottom - Bullish")
 
-    # --- 7. Hammer / Hanging Man / Inverted Hammer / Shooting Star ---
-    if lower_wick(a) > body(a) * 2 and upper_wick(a) < body(a):
-        if c["close"] > b["close"] > a["close"]:
-            return "Hammer"
-        elif c["close"] < b["close"] < a["close"]:
-            return "Hanging Man"
-        else:
-            return "Hammer / Hanging Man"
+    if patterns:
+        return " | ".join(patterns)
 
-    if upper_wick(a) > body(a) * 2 and lower_wick(a) < body(a):
-        if c["close"] < b["close"] < a["close"]:
-            return "Inverted Hammer"
-        elif c["close"] > b["close"] > a["close"]:
-            return "Shooting Star"
-        else:
-            return "Shooting Star / Inverted Hammer"
-
-    # --- 8. Doji Types + Spinning Top ---
-    if body(a) / candle_range(a) < 0.1:
-        if upper_wick(a) > candle_range(a) * 0.7 and lower_wick(a) < candle_range(a) * 0.1:
-            return "Gravestone Doji"
-        if lower_wick(a) > candle_range(a) * 0.7 and upper_wick(a) < candle_range(a) * 0.1:
-            return "Dragonfly Doji"
-        return "Doji"
-
-    # Spinning Top - chhota body, dono taraf lambi wick
-    if body(a) / candle_range(a) < 0.3 and upper_wick(a) > body(a) and lower_wick(a) > body(a):
-        return "Spinning Top"
-
-    return "No clear pattern"
+    return "No Clear Pattern"
