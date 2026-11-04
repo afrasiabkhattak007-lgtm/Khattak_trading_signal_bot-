@@ -72,7 +72,6 @@ def candle_pattern(df):
         return "Evening Star"
 
     # --- 4. Three White Soldiers / Three Black Crows ---
-    d = df.iloc[-4] if len(df) >= 4 else b
     three_white = (
         is_bullish(c) and is_bullish(b) and is_bullish(a)
         and b["close"] > c["close"] and a["close"] > b["close"]
@@ -102,11 +101,23 @@ def candle_pattern(df):
     if dark_cloud:
         return "Dark Cloud Cover"
 
-    # --- 6. Hammer / Hanging Man / Inverted Hammer / Shooting Star ---
-    # Hammer aur Hanging Man ki shakal ek jaisi hoti hai, farq trend se pata chalta hai
-    # Neeche wali lambi wick + chhota body
+    # --- 6. Tweezer Top / Tweezer Bottom ---
+    # Dono candles ka high ya low taqreeban barabar ho
+    tweezer_top = (
+        is_bullish(b) and is_bearish(a)
+        and abs(b["high"] - a["high"]) < candle_range(b) * 0.05
+    )
+    tweezer_bottom = (
+        is_bearish(b) and is_bullish(a)
+        and abs(b["low"] - a["low"]) < candle_range(b) * 0.05
+    )
+    if tweezer_top:
+        return "Tweezer Top"
+    if tweezer_bottom:
+        return "Tweezer Bottom"
+
+    # --- 7. Hammer / Hanging Man / Inverted Hammer / Shooting Star ---
     if lower_wick(a) > body(a) * 2 and upper_wick(a) < body(a):
-        # Agar pehle downtrend tha to Hammer, uptrend tha to Hanging Man
         if c["close"] > b["close"] > a["close"]:
             return "Hammer"
         elif c["close"] < b["close"] < a["close"]:
@@ -122,14 +133,16 @@ def candle_pattern(df):
         else:
             return "Shooting Star / Inverted Hammer"
 
-    # --- 7. Doji Types ---
+    # --- 8. Doji Types + Spinning Top ---
     if body(a) / candle_range(a) < 0.1:
-        # Gravestone - upar lambi wick, neeche kuch nahi
         if upper_wick(a) > candle_range(a) * 0.7 and lower_wick(a) < candle_range(a) * 0.1:
             return "Gravestone Doji"
-        # Dragonfly - neeche lambi wick, upar kuch nahi
         if lower_wick(a) > candle_range(a) * 0.7 and upper_wick(a) < candle_range(a) * 0.1:
             return "Dragonfly Doji"
         return "Doji"
+
+    # Spinning Top - chhota body, dono taraf lambi wick
+    if body(a) / candle_range(a) < 0.3 and upper_wick(a) > body(a) and lower_wick(a) > body(a):
+        return "Spinning Top"
 
     return "No clear pattern"
