@@ -1,148 +1,135 @@
-import os, requests
-from flask import Flask, request, jsonify
-app = Flask(__name__)
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# ---------------- CANDLE PATTERNS ----------------
 
-def set_webhook():
-    url = os.environ.get("RENDER_EXTERNAL_URL")
-    if url and BOT_TOKEN:
-        try:
-            requests.get(f"{API}/setWebhook?url={url}/webhook&drop_pending_updates=True", timeout=15)
-        except: pass
-set_webhook()
+def candle_pattern(df):
+    if len(df) < 3:
+        return "No clear pattern"
 
-def send(chat_id, text):
-    requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+    a = df.iloc[-1]  # aaj wali candle
+    b = df.iloc[-2]  # kal wali candle
+    c = df.iloc[-3]  # parson wali candle
 
-# --- 16 COINS FINAL LIST - FIXED ---
-SYMBOL_MAP = {
-    "ETH/USDT": "ETHUSDT", "ETH": "ETHUSDT",
-    "BNB/USDT": "BNBUSDT", "BNB": "BNBUSDT",
-    "SOL/USDT": "SOLUSDT", "SOL": "SOLUSDT",
-    "TRX/USDT": "TRXUSDT", "TRX": "TRXUSDT",
-    "TON/USDT": "TONUSDT", "TON": "TONUSDT",
-    "TRUMP/USDT": "TRUMPUSDT", "TRUMP": "TRUMPUSDT",
-    "BANANA GUN/USDT": "BANANAS31USDT", "BANANA GUN": "BANANAS31USDT", "BANANA": "BANANAS31USDT",
-    "BTC/USDT": "BTCUSDT", "BTC": "BTCUSDT",
-    "GRAM/USDT": "GRAMUSDT", "GRAM": "GRAMUSDT",
-    "SUI/USDT": "SUIUSDT", "SUI": "SUIUSDT",
-    "DOGE/USDT": "DOGEUSDT", "DOGE": "DOGEUSDT",
-    "LA/USDT": "LAUSDT", "LA": "LAUSDT",
-    "SHIB/USDT": "SHIBUSDT", "SHIB": "SHIBUSDT",
-    "NOT/USDT": "NOTUSDT", "NOT": "NOTUSDT",
-    "SILVER": "SILVER", "XAG": "SILVER",
-    "GOLD": "GOLD", "XAU": "GOLD",
-}
+    def body(x):
+        return abs(x["close"] - x["open"])
+    def candle_range(x):
+        return max(x["high"] - x["low"], 1e-12)
+    def upper_wick(x):
+        return x["high"] - max(x["open"], x["close"])
+    def lower_wick(x):
+        return min(x["open"], x["close"]) - x["low"]
+    def is_bullish(x):
+        return x["close"] > x["open"]
+    def is_bearish(x):
+        return x["close"] < x["open"]
 
-def get_signal_and_price(sym):
-    price = 0
-    try:
-        if sym == "GOLD":
-            r = requests.get("https://api.gold-api.com/price/XAU", timeout=10).json()
-            price = float(r['price'])
-            change = float(r.get('ch', 0))
-            if change > 5: signal, color = "BUY", "🟢 GREEN"
-            elif change < -5: signal, color = "SELL", "🔴 RED"
-            else: signal, color = "WAIT", "🟡 YELLOW"
-            return price, signal, color
-            
-        if sym == "SILVER":
-            r = requests.get("https://api.gold-api.com/price/XAG", timeout=10).json()
-            price = float(r['price'])
-            change = float(r.get('ch', 0))
-            if change > 0.2: signal, color = "BUY", "🟢 GREEN"
-            elif change < -0.2: signal, color = "SELL", "🔴 RED"
-            else: signal, color = "WAIT", "🟡 YELLOW"
-            return price, signal, color
+    # --- 1. Engulfing ---
+    bullish_engulfing = (
+        is_bearish(b) and is_bullish(a)
+        and a["open"] <= b["close"]
+        and a["close"] >= b["open"]
+    )
+    bearish_engulfing = (
+        is_bullish(b) and is_bearish(a)
+        and a["open"] >= b["close"]
+        and a["close"] <= b["open"]
+    )
+    if bullish_engulfing:
+        return "Bullish Engulfing"
+    if bearish_engulfing:
+        return "Bearish Engulfing"
 
-        # FIXED URL
-        price_data = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={sym}", timeout=10).json()
-        price = float(price_data['price'])
-        
-        try:
-            klines = requests.get(f"https://data-api.binance.vision/api/v3/klines?symbol={sym}&interval=1h&limit=50", timeout=10).json()
-            closes = [float(k[4]) for k in klines]
-            ema20 = sum(closes[-20:]) / 20
-            ema50 = sum(closes[-50:]) / 50
-            if price > ema20 and ema20 > ema50:
-                signal, color = "BUY", "🟢 GREEN LIGHT"
-            elif price < ema20 and ema20 < ema50:
-                signal, color = "SELL", "🔴 RED LIGHT"
-            else:
-                signal, color = "WAIT", "🟡 YELLOW LIGHT"
-        except:
-            signal, color = "WAIT", "🟡 YELLOW LIGHT"
-            
-        return price, signal, color
-    except Exception as e:
-        print(f"Error {sym}: {e}")
-        if price != 0:
-            return price, "WAIT", "🟡 YELLOW LIGHT"
-        return None, None, None
+    # --- 2. Harami ---
+    bullish_harami = (
+        is_bearish(b) and is_bullish(a)
+        and a["open"] > b["close"]
+        and a["close"] < b["open"]
+        and body(a) < body(b)
+    )
+    bearish_harami = (
+        is_bullish(b) and is_bearish(a)
+        and a["open"] < b["close"]
+        and a["close"] > b["open"]
+        and body(a) < body(b)
+    )
+    if bullish_harami:
+        return "Bullish Harami"
+    if bearish_harami:
+        return "Bearish Harami"
 
-def find_symbol(user_text):
-    txt = user_text.upper().replace("/CHECK", "").strip()
-    if txt in SYMBOL_MAP:
-        return SYMBOL_MAP[txt], txt
-    txt_ns = txt.replace(" ", "").replace("/", "")
-    for key, val in SYMBOL_MAP.items():
-        if key.replace(" ", "").replace("/", "") == txt_ns:
-            return val, key
-    return None, None
+    # --- 3. Morning Star / Evening Star ---
+    morning_star = (
+        is_bearish(c) and body(c) > candle_range(c) * 0.6
+        and body(b) < candle_range(b) * 0.3
+        and is_bullish(a) and a["close"] > (c["open"] + c["close"]) / 2
+    )
+    evening_star = (
+        is_bullish(c) and body(c) > candle_range(c) * 0.6
+        and body(b) < candle_range(b) * 0.3
+        and is_bearish(a) and a["close"] < (c["open"] + c["close"]) / 2
+    )
+    if morning_star:
+        return "Morning Star"
+    if evening_star:
+        return "Evening Star"
 
-@app.route('/')
-def home():
-    return "✅ Khattak Bot LIVE - 16 Coins + Traffic Lights - FIXED"
+    # --- 4. Three White Soldiers / Three Black Crows ---
+    d = df.iloc[-4] if len(df) >= 4 else b
+    three_white = (
+        is_bullish(c) and is_bullish(b) and is_bullish(a)
+        and b["close"] > c["close"] and a["close"] > b["close"]
+    )
+    three_black = (
+        is_bearish(c) and is_bearish(b) and is_bearish(a)
+        and b["close"] < c["close"] and a["close"] < b["close"]
+    )
+    if three_white:
+        return "Three White Soldiers"
+    if three_black:
+        return "Three Black Crows"
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json()
-    if not data or "message" not in data:
-        return jsonify(ok=True)
-    chat_id = data["message"]["chat"]["id"]
-    txt = data["message"].get("text","").strip()
-    
-    if "/start" in txt.lower():
-        send(chat_id, """✅ <b>Khattak Bot - 16 Coins + Signals</b>
-💰 Capital: 35 Lakh
+    # --- 5. Piercing Line / Dark Cloud Cover ---
+    piercing = (
+        is_bearish(b) and is_bullish(a)
+        and a["open"] < b["low"]
+        and a["close"] > (b["open"] + b["close"]) / 2
+    )
+    dark_cloud = (
+        is_bullish(b) and is_bearish(a)
+        and a["open"] > b["high"]
+        and a["close"] < (b["open"] + b["close"]) / 2
+    )
+    if piercing:
+        return "Piercing Line"
+    if dark_cloud:
+        return "Dark Cloud Cover"
 
-<b>Commands:</b>
-/check ETH
-/check BNB
-/check SOL
-/check DOGE
-/check SUI
-/check NOT
-/check GOLD
-
-🟢 BUY = Green Light
-🔴 SELL = Red Light
-🟡 WAIT = Yellow Light""")
-        
-    elif "/check" in txt.lower():
-        bin_sym, orig = find_symbol(txt)
-        if not bin_sym:
-            send(chat_id, f"❌ {txt} nahi mila. /start likho.")
+    # --- 6. Hammer / Hanging Man / Inverted Hammer / Shooting Star ---
+    # Hammer aur Hanging Man ki shakal ek jaisi hoti hai, farq trend se pata chalta hai
+    # Neeche wali lambi wick + chhota body
+    if lower_wick(a) > body(a) * 2 and upper_wick(a) < body(a):
+        # Agar pehle downtrend tha to Hammer, uptrend tha to Hanging Man
+        if c["close"] > b["close"] > a["close"]:
+            return "Hammer"
+        elif c["close"] < b["close"] < a["close"]:
+            return "Hanging Man"
         else:
-            price, signal, color = get_signal_and_price(bin_sym)
-            if not price:
-                send(chat_id, f"⚠️ {orig} ka price nahi mil raha.")
-            else:
-                sl = price * 0.98
-                tp1 = price * 1.02
-                tp2 = price * 1.04
-                msg = (
-                    f"📊 <b>{orig}</b>\n"
-                    f"Price: {price:.6f}\n\n"
-                    f"{color}\n"
-                    f"<b>Signal: {signal}</b>\n\n"
-                    f"SL: {sl:.6f}\n"
-                    f"TP1: {tp1:.6f}\n"
-                    f"TP2: {tp2:.6f}\n"
-                )
-                send(chat_id, msg)
-    return jsonify(ok=True)
+            return "Hammer / Hanging Man"
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT",10000)))
+    if upper_wick(a) > body(a) * 2 and lower_wick(a) < body(a):
+        if c["close"] < b["close"] < a["close"]:
+            return "Inverted Hammer"
+        elif c["close"] > b["close"] > a["close"]:
+            return "Shooting Star"
+        else:
+            return "Shooting Star / Inverted Hammer"
+
+    # --- 7. Doji Types ---
+    if body(a) / candle_range(a) < 0.1:
+        # Gravestone - upar lambi wick, neeche kuch nahi
+        if upper_wick(a) > candle_range(a) * 0.7 and lower_wick(a) < candle_range(a) * 0.1:
+            return "Gravestone Doji"
+        # Dragonfly - neeche lambi wick, upar kuch nahi
+        if lower_wick(a) > candle_range(a) * 0.7 and upper_wick(a) < candle_range(a) * 0.1:
+            return "Dragonfly Doji"
+        return "Doji"
+
+    return "No clear pattern"
