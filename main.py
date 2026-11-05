@@ -59,7 +59,6 @@ def load_coins():
             d = json.load(f)
             if not isinstance(d, dict):
                 return DEFAULT_COINS.copy()
-            # Purani coins.json se GOLD/SILVER khud nikal do
             cleaned = {k: v for k, v in d.items() if k not in BLOCKED and v not in BLOCKED}
             if len(cleaned) != len(d):
                 with open(STATE_FILE, "w", encoding="utf-8") as out:
@@ -309,7 +308,7 @@ def format_result(result):
         f"Updated: {result['timestamp']}\n"
         f"Preliminary signal only — manual 36-point review required.")
 
-def scan_all():
+def scan_all(chat_id=None):
     results = []
     for name, symbol in list(COINS.items()):
         if name in BLOCKED or symbol in BLOCKED:
@@ -317,7 +316,7 @@ def scan_all():
         results.append(format_result(analyze_coin(name, symbol)))
         time.sleep(0.15)
     header = "📊 KHATTAK LIVE MARKET SCANNER\nHourly market report\nNo automatic trading or order execution.\n\n"
-    send_long_message(header + "\n\n".join(results))
+    send_long_message(header + "\n\n".join(results), chat_id=chat_id)
 
 def find_symbol(ticker):
     ticker = ticker.upper().strip()
@@ -361,7 +360,7 @@ def remove_coin(ticker):
     del COINS[ticker]; save_coins(COINS)
     return f"✅ {ticker} removed."
 
-def handle_command(text):
+def handle_command(text, chat_id=None):
     parts = text.strip().split()
     if not parts: return "Use /help to see commands."
     cmd = parts[0].split("@")[0].lower()
@@ -379,19 +378,31 @@ def handle_command(text):
             ticker = parts[1].upper().strip()
             if ticker in BLOCKED:
                 return "GOLD / SILVER is not supported on Render."
-            symbol = COINS.get(ticker) or find_symbol(ticker)
-            if not symbol: return f"Could not verify a live USDT market for {ticker}."
-            return format_result(analyze_coin(ticker, symbol))
-        threading.Thread(target=scan_all, daemon=True).start()
+            def do_single():
+                target = chat_id or CHAT_ID
+                symbol = COINS.get(ticker) or find_symbol(ticker)
+                if not symbol:
+                    send_message(f"Could not verify a live USDT market for {ticker}.", chat_id=target)
+                else:
+                    send_message(format_result(analyze_coin(ticker, symbol)), chat_id=target)
+            threading.Thread(target=do_single, daemon=True).start()
+            return f"🔄 Scanning {ticker}... Result will arrive shortly."
+        threading.Thread(target=lambda: scan_all(chat_id), daemon=True).start()
         return "🔄 Full market scan started. Results will arrive shortly."
     if cmd == "/check":
         if len(parts) < 2: return "Usage: /check BTC"
         ticker = parts[1].upper().strip()
         if ticker in BLOCKED:
             return "GOLD / SILVER is not supported on Render."
-        symbol = COINS.get(ticker) or find_symbol(ticker)
-        if not symbol: return f"Could not verify a live USDT market for {ticker}."
-        return format_result(analyze_coin(ticker, symbol))
+        def do_check():
+            target = chat_id or CHAT_ID
+            symbol = COINS.get(ticker) or find_symbol(ticker)
+            if not symbol:
+                send_message(f"Could not verify a live USDT market for {ticker}.", chat_id=target)
+            else:
+                send_message(format_result(analyze_coin(ticker, symbol)), chat_id=target)
+        threading.Thread(target=do_check, daemon=True).start()
+        return f"🔄 Checking {ticker}... Result will arrive shortly."
     return "Unknown command. Use /help to see commands."
 
 @app.route("/", methods=["GET"])
@@ -411,7 +422,7 @@ def webhook():
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
         if text and chat_id:
-            reply = handle_command(text)
+            reply = handle_command(text, chat_id=chat_id)
             send_message(reply, chat_id=chat_id)
         return jsonify({"ok": True}), 200
     except Exception as exc:
