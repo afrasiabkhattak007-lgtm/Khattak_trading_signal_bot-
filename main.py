@@ -367,4 +367,38 @@ def handle_command(text):
         threading.Thread(target=scan_all, daemon=True).start()
         return "🔄 Full market scan started. Results will arrive shortly."
     if cmd == "/check":
-        if len(parts)
+        if len(parts) < 2: return "Usage: /check BTC"
+        ticker = parts[1].upper().strip()
+        symbol = COINS.get(ticker) or find_symbol(ticker)
+        if not symbol: return f"Could not verify a live USDT market for {ticker}."
+        return format_result(analyze_coin(ticker, symbol))
+    return "Unknown command. Use /help to see commands."
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "ok", "service": "KHATTAK LIVE SCANNER"}), 200
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        msg = data.get("message") or {}
+        text = msg.get("text", "")
+        if text:
+            reply = handle_command(text)
+            send_message(reply)
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        logging.exception("Webhook error: %s", exc)
+        return jsonify({"ok": False}), 200
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(scan_all, "interval", hours=1)
+scheduler.start()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT)
