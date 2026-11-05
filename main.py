@@ -26,8 +26,10 @@ DEFAULT_COINS = {
     "SOL": "SOLUSDT", "XRP": "XRPUSDT", "TRX": "TRXUSDT",
     "TON": "TONUSDT", "SUI": "SUIUSDT", "GRAM": "GRAMUSDT",
     "SHIB": "SHIBUSDT", "DOGE": "DOGEUSDT", "BANANA GUN": "BANANAUSDT",
-    "GOLD": "XAUUSDT", "SILVER": "XAGUSDT",
 }
+
+# GOLD / SILVER block - Binance Futures 451 + Bybit 403 on Render
+BLOCKED = {"GOLD", "SILVER", "XAUUSDT", "XAGUSDT", "XAUUSD", "XAGUSD"}
 
 def send_message(message, chat_id=None):
     target = chat_id or CHAT_ID
@@ -57,7 +59,14 @@ def load_coins():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             d = json.load(f)
-            return d if isinstance(d, dict) else DEFAULT_COINS.copy()
+            if not isinstance(d, dict):
+                return DEFAULT_COINS.copy()
+            # Purani coins.json se GOLD/SILVER khud nikal do
+            cleaned = {k: v for k, v in d.items() if k not in BLOCKED and v not in BLOCKED}
+            if len(cleaned) != len(d):
+                with open(STATE_FILE, "w", encoding="utf-8") as out:
+                    json.dump(cleaned, out, indent=2)
+            return cleaned if cleaned else DEFAULT_COINS.copy()
     except (OSError, ValueError):
         return DEFAULT_COINS.copy()
 
@@ -90,21 +99,13 @@ def resolve_bybit_symbol(symbol):
     return bool(items and items[0].get("status") == "Trading")
 
 def get_klines(symbol, interval, limit=250):
-    is_metal = symbol in ("XAUUSDT", "XAGUSDT")
-    sources = []
-    if is_metal:
-        sources.append(("Binance Futures", "futures"))
-    else:
-        sources.append(("Binance Spot", "spot"))
-    sources.append(("Bybit Linear", "bybit"))
+    if symbol in ("XAUUSDT", "XAGUSDT"):
+        raise RuntimeError("GOLD/SILVER not supported on Render - blocked by Binance/Bybit")
+    sources = [("Binance Spot", "spot"), ("Bybit Linear", "bybit")]
     for source_name, source_type in sources:
         try:
             if source_type == "spot":
                 data = get_json(BINANCE_SPOT + "/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": limit})
-                df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "trades", "taker_buy", "taker_quote", "ignore"])
-                df = df[["time", "open", "high", "low", "close", "volume"]]
-            elif source_type == "futures":
-                data = get_json(BINANCE_FUTURES + "/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": limit})
                 df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "trades", "taker_buy", "taker_quote", "ignore"])
                 df = df[["time", "open", "high", "low", "close", "volume"]]
             else:
@@ -313,6 +314,8 @@ def format_result(result):
 def scan_all():
     results = []
     for name, symbol in list(COINS.items()):
+        if name in BLOCKED or symbol in BLOCKED:
+            continue
         results.append(format_result(analyze_coin(name, symbol)))
         time.sleep(0.15)
     header = "📊 KHATTAK LIVE MARKET SCANNER\nHourly market report\nNo automatic trading or order execution.\n\n"
@@ -320,14 +323,13 @@ def scan_all():
 
 def find_symbol(ticker):
     ticker = ticker.upper().strip()
-    if ticker in ("GOLD", "SILVER"):
-        return "XAUUSDT" if ticker == "GOLD" else "XAGUSDT"
+    if ticker in BLOCKED:
+        return None
     symbol = ticker if ticker.endswith("USDT") else ticker + "USDT"
+    if symbol in BLOCKED:
+        return None
     try:
         if resolve_binance_symbol(symbol, futures=False): return symbol
-    except Exception: pass
-    try:
-        if resolve_binance_symbol(symbol, futures=True): return symbol
     except Exception: pass
     try:
         if resolve_bybit_symbol(symbol): return symbol
@@ -337,6 +339,8 @@ def find_symbol(ticker):
 def add_coin(ticker):
     ticker = ticker.upper().strip()
     if not ticker or len(ticker) > 30: return "Invalid coin name."
+    if ticker in BLOCKED:
+        return "GOLD / SILVER is not supported. Binance / Bybit block it on Render (451 / 403)."
     if ticker in COINS: return f"{ticker} is already in the list."
     symbol = find_symbol(ticker)
     if not symbol: return f"Could not verify a live USDT market for {ticker}. Coin was not added."
@@ -347,6 +351,14 @@ def add_coin(ticker):
 
 def remove_coin(ticker):
     ticker = ticker.upper().strip()
+    if ticker in ("XAUUSDT", "XAUUSD"):
+        ticker = "GOLD"
+    if ticker in ("XAGUSDT", "XAGUSD"):
+        ticker = "SILVER"
+    for k, v in list(COINS.items()):
+        if v == ticker:
+            ticker = k
+            break
     if ticker not in COINS: return f"{ticker} is not in the list."
     del COINS[ticker]; save_coins(COINS)
     return f"✅ {ticker} removed."
@@ -356,7 +368,7 @@ def handle_command(text):
     if not parts: return "Use /help to see commands."
     cmd = parts[0].split("@")[0].lower()
     if cmd == "/start": return "✅ KHATTAK LIVE SCANNER is online.\nHourly scanner is configured.\nUse /help for commands."
-    if cmd == "/help": return "KHATTAK LIVE SCANNER COMMANDS\n\n/start — Bot status\n/scan — Scan all coins now\n/check BTC — Scan one coin\n/add PEPE — Add a coin\n/remove PEPE — Remove a coin\n/list — Show coin list\n/help — Help\n\nBot does not execute trades."
+    if cmd == "/help": return "KHATTAK LIVE SCANNER COMMANDS\n\n/start — Bot status\n/scan — Scan all coins now\n/scan BTC — Scan one coin\n/check BTC — Scan one coin\n/add PEPE — Add a coin\n/remove PEPE — Remove a coin\n/list — Show coin list\n/help — Help\n\nBot does not execute trades."
     if cmd == "/list": return "📋 COIN LIST\n" + "\n".join(f"{n}: {s}" for n, s in COINS.items())
     if cmd == "/add":
         if len(parts) < 2: return "Usage: /add PEPE"
@@ -365,11 +377,20 @@ def handle_command(text):
         if len(parts) < 2: return "Usage: /remove PEPE"
         return remove_coin(parts[1])
     if cmd == "/scan":
+        if len(parts) >= 2:
+            ticker = parts[1].upper().strip()
+            if ticker in BLOCKED:
+                return "GOLD / SILVER is not supported on Render."
+            symbol = COINS.get(ticker) or find_symbol(ticker)
+            if not symbol: return f"Could not verify a live USDT market for {ticker}."
+            return format_result(analyze_coin(ticker, symbol))
         threading.Thread(target=scan_all, daemon=True).start()
         return "🔄 Full market scan started. Results will arrive shortly."
     if cmd == "/check":
         if len(parts) < 2: return "Usage: /check BTC"
         ticker = parts[1].upper().strip()
+        if ticker in BLOCKED:
+            return "GOLD / SILVER is not supported on Render."
         symbol = COINS.get(ticker) or find_symbol(ticker)
         if not symbol: return f"Could not verify a live USDT market for {ticker}."
         return format_result(analyze_coin(ticker, symbol))
@@ -393,7 +414,6 @@ def webhook():
         chat_id = chat.get("id")
         if text and chat_id:
             reply = handle_command(text)
-            # Jawab usi ko bhejo jisne bheja hai
             send_message(reply, chat_id=chat_id)
         return jsonify({"ok": True}), 200
     except Exception as exc:
