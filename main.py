@@ -29,27 +29,28 @@ DEFAULT_COINS = {
     "GOLD": "XAUUSDT", "SILVER": "XAGUSDT",
 }
 
-def send_message(message):
-    if not BOT_TOKEN or not CHAT_ID:
+def send_message(message, chat_id=None):
+    target = chat_id or CHAT_ID
+    if not BOT_TOKEN or not target:
         return False
     try:
-        r = session.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": CHAT_ID, "text": message, "disable_web_page_preview": True}, timeout=20)
+        r = session.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": target, "text": message, "disable_web_page_preview": True}, timeout=20)
         r.raise_for_status()
         return r.json().get("ok", False)
     except Exception as exc:
         logging.exception("Telegram send error: %s", exc)
         return False
 
-def send_long_message(message):
+def send_long_message(message, chat_id=None):
     limit = 3900
     while message:
         if len(message) <= limit:
-            send_message(message)
+            send_message(message, chat_id=chat_id)
             break
         cut = message.rfind("\n", 0, limit)
         if cut < 1:
             cut = limit
-        send_message(message[:cut])
+        send_message(message[:cut], chat_id=chat_id)
         message = message[cut:].lstrip()
 
 def load_coins():
@@ -388,13 +389,16 @@ def webhook():
         data = request.get_json(force=True, silent=True) or {}
         msg = data.get("message") or {}
         text = msg.get("text", "")
-        if text:
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        if text and chat_id:
             reply = handle_command(text)
-            send_message(reply)
+            # Jawab usi ko bhejo jisne bheja hai
+            send_message(reply, chat_id=chat_id)
         return jsonify({"ok": True}), 200
     except Exception as exc:
         logging.exception("Webhook error: %s", exc)
-        return jsonify({"ok": False}), 200
+        return jsonify({"ok": True}), 200
 
 scheduler = BackgroundScheduler()
 scheduler.add_job(scan_all, "interval", hours=1)
