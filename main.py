@@ -22,10 +22,8 @@ session = requests.Session()
 session.headers.update({"User-Agent": "Khattak-Live-Scanner/1.0"})
 
 DEFAULT_COINS = {
-    "BTC": "BTCUSDT", "ETH": "ETHUSDT", "BNB": "BNBUSDT",
-    "SOL": "SOLUSDT", "XRP": "XRPUSDT", "TRX": "TRXUSDT",
-    "TON": "TONUSDT", "SUI": "SUIUSDT", "GRAM": "GRAMUSDT",
-    "SHIB": "SHIBUSDT", "DOGE": "DOGEUSDT", "BANANA GUN": "BANANAUSDT",
+    "BTC": "BTCUSDT", "ETH": "ETHUSDT",
+    "BNB": "BNBUSDT", "SOL": "SOLUSDT",
 }
 
 # GOLD / SILVER block - Binance Futures 451 + Bybit 403 on Render
