@@ -8,12 +8,13 @@ PORT=int(os.getenv("PORT","10000")); TWELVE_DATA_API_KEY=os.getenv("TWELVE_DATA_
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}"; STATE_FILE="coins.json"
 BINANCE_SPOT="https://data-api.binance.vision"; BYBIT="https://api.bybit.com"; TWELVE_DATA="https://api.twelvedata.com"
 TIMEFRAMES={"1d":"1day","4h":"4h","1h":"1h"}
-ZONE_ATR=0.5; SL_BUFFER_ATR=0.3; MAX_RISK_ATR=3.0; RR=2.0; MAX_MOVE_ATR=1.0; TD_MIN_GAP=8.0
+# BALANCED SETTINGS - na sakht, na naram
+ZONE_ATR=0.6; SL_BUFFER_ATR=0.3; MAX_RISK_ATR=3.5; RR=2.0; MAX_MOVE_ATR=1.5; TD_MIN_GAP=8.0
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(message)s")
-app=Flask(__name__); session=requests.Session(); session.headers.update({"User-Agent":"Khattak-Live-Scanner/4.2"})
+app=Flask(__name__); session=requests.Session(); session.headers.update({"User-Agent":"Khattak-Live-Scanner/5.0"})
 DEFAULT_COINS={"BTC":"BTCUSDT","ETH":"ETHUSDT","BNB":"BNBUSDT","SOL":"SOLUSDT"}
-METALS={"GOLD":{"symbol":"XAU/USD","provider":"Twelve Data"},"SILVER":{"symbol":"XAG/USD","provider":"Twelve Data"}}
-BLOCKED={"XAUUSDT","XAGUSDT","XAUUSD","XAGUSD"}
+METALS={"GOLD":{"symbol":"XAU/USD","provider":"Twelve Data"}}
+BLOCKED={"XAUUSDT","XAUUSD"}
 def send_message(message,chat_id=None):
     target=chat_id or CHAT_ID
     if not BOT_TOKEN or not target: return False
@@ -64,16 +65,12 @@ def twelve_data_request(endpoint,params):
         if wait>0: time.sleep(wait)
         try: return get_json(f"{TWELVE_DATA}/{endpoint}",p)
         finally: _td_last[0]=time.time()
-# ---- SILVER FIX: try many symbols ----
 def _metal_tries(metal_name):
-    if metal_name=="SILVER":
-        return [("XAG/USD","OANDA"),("XAG/USD",None),("XAGUSD",None),("XAG/USD","FOREX"),("SILVER",None)]
     return [("XAU/USD","OANDA"),("XAU/USD",None),("XAU/USD","FOREX")]
 def get_metal_klines(metal_name,interval,outputsize=250):
     errors=[]
     for symbol,exchange in _metal_tries(metal_name):
         try:
-            logging.info("%s %s: Trying %s exchange=%s",metal_name,interval,symbol,exchange)
             p={"symbol":symbol,"interval":TIMEFRAMES[interval],"outputsize":outputsize,"timezone":"UTC","format":"JSON"}
             if exchange: p["exchange"]=exchange
             data=twelve_data_request("time_series",p)
@@ -85,7 +82,6 @@ def get_metal_klines(metal_name,interval,outputsize=250):
             df=df.dropna(subset=["time","open","high","low","close"]).sort_values("time").reset_index(drop=True)
             if len(df)>2: df=df.iloc[:-1].copy()
             if len(df)<100: raise RuntimeError(f"Insufficient {metal_name} {interval}: {len(df)}")
-            logging.info("%s %s: Success %s/%s",metal_name,interval,symbol,exchange)
             return df.reset_index(drop=True),f"Twelve Data ({symbol}/{exchange})"
         except Exception as e:
             errors.append(f"{symbol}/{exchange}: {str(e)[:150]}"); continue
@@ -172,29 +168,22 @@ def market_structure(df):
     if cur["close"]>prev["high"]: return "Possible Bullish CHoCH"
     if cur["close"]<prev["low"]: return "Possible Bearish CHoCH"
     return "No confirmed break"
-def retest_state(direction,h1,support,resistance,live_price):
-    last=h1.iloc[-1]; prev=h1.iloc[-2]; atr=float(last["ATR"]); close=float(last["close"]); tol=ZONE_ATR*atr; recent=h1.tail(3)
+def check_level(direction,h1,level,level_name,live_price):
+    last=h1.iloc[-1]; prev=h1.iloc[-2]; atr=float(last["ATR"]); tol=ZONE_ATR*atr; recent=h1.tail(3)
     if direction=="BUY":
-        levels={"1H EMA20":float(last["EMA20"]),"1H EMA50":float(last["EMA50"]),"4H Support":support}; extreme=float(recent["low"].min()); candle_ok=last["close"]>last["open"] and last["close"]>prev["close"]
+        extreme=float(recent["low"].min()); bounce=last["close"]>last["open"] and last["close"]>prev["close"]; touched=(level-1.5*atr)<=extreme<=(level+tol); above=last["close"]>level
     else:
-        levels={"1H EMA20":float(last["EMA20"]),"1H EMA50":float(last["EMA50"]),"4H Resistance":resistance}; extreme=float(recent["high"].max()); candle_ok=last["close"]<last["open"] and last["close"]<prev["close"]
-    confirmed=[]; in_zone=[]
-    for name,lvl in levels.items():
-        if direction=="BUY": touched=(lvl-1.5*atr)<=extreme<=(lvl+tol); ok=touched and candle_ok and close>lvl
-        else: touched=(lvl-tol)<=extreme<=(lvl+1.5*atr); ok=touched and candle_ok and close<lvl
-        if ok: confirmed.append((abs(close-lvl),name,lvl))
-        if abs(live_price-lvl)<=tol: in_zone.append((abs(live_price-lvl),name,lvl))
-    out={"state":"FAR","level_name":None,"level":None,"zone_low":None,"zone_high":None,"entry":None,"sl":None,"tp":None}
-    if confirmed:
-        _,name,lvl=min(confirmed); out.update(level_name=name,level=lvl,zone_low=lvl-tol,zone_high=lvl+tol); entry=close
-        if direction=="BUY": sl=extreme-SL_BUFFER_ATR*atr; risk=entry-sl
-        else: sl=extreme+SL_BUFFER_ATR*atr; risk=sl-entry
-        if risk<=0 or risk>MAX_RISK_ATR*atr: out["state"]="RISK"; return out
-        if abs(live_price-entry)>MAX_MOVE_ATR*atr: out["state"]="MOVED"; return out
-        tp=entry+RR*risk if direction=="BUY" else entry-RR*risk; out.update(state="CONFIRMED",entry=entry,sl=sl,tp=tp); return out
-    if in_zone:
-        _,name,lvl=min(in_zone); out.update(state="ZONE",level_name=name,level=lvl,zone_low=lvl-tol,zone_high=lvl+tol); return out
-    name,lvl=min(levels.items(),key=lambda kv: abs(live_price-kv[1])); out.update(level_name=name,level=lvl,zone_low=lvl-tol,zone_high=lvl+tol); return out
+        extreme=float(recent["high"].max()); bounce=last["close"]<last["open"] and last["close"]<prev["close"]; touched=(level-tol)<=extreme<=(level+1.5*atr); above=last["close"]<level
+    in_zone=abs(live_price-level)<=tol
+    dist_atr=abs(live_price-level)/atr if atr>0 else 999
+    # Balanced: 3 cheezain milain to Retest Confirm, 2 milain to Nazdeek
+    score=sum([touched,bounce,above])
+    if touched and bounce and above: state="RETEST CONFIRM"
+    elif in_zone: state="PRICE IN ZONE - Bounce ka wait"
+    elif score>=2: state="RETEST NAZDEEK"
+    elif dist_atr<=2.0: state="LEVEL KE QAREEB"
+    else: state="LEVEL SE DOOR"
+    return {"level_name":level_name,"level":level,"zone_low":level-tol,"zone_high":level+tol,"state":state,"touched":touched,"bounce":bounce,"in_zone":in_zone,"dist_atr":dist_atr,"extreme":extreme}
 def analyze_coin(name,symbol=None):
     try:
         is_metal=name in METALS; display_symbol=METALS[name]["symbol"] if is_metal else symbol; frames={}; sources=[]
@@ -206,47 +195,49 @@ def analyze_coin(name,symbol=None):
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         if is_metal:
             age=pd.Timestamp.now(tz="UTC")-frames["1h"]["time"].iloc[-1]
-            if age>pd.Timedelta(hours=4): return {"name":name,"symbol":display_symbol,"signal":"WAIT","closed":True,"reason":"Market closed / data stale - no signal","timestamp":timestamp}
+            if age>pd.Timedelta(hours=4): return {"name":name,"symbol":display_symbol,"closed":True,"reason":"Market closed / data stale","timestamp":timestamp}
         support,resistance=support_resistance(frames["4h"]); pattern=candle_pattern(frames["1h"]); structure=market_structure(frames["1h"])
         if is_metal: live_price,live_source=get_metal_live_price(name)
         else:
             live_price,live_source=get_live_price(symbol)
             if live_price is None: live_price=candle_price; live_source="Last closed 1H candle (ticker unavailable)"
-        direction="NONE"
-        if t1d=="UPTREND" and t4h=="UPTREND": direction="BUY"
-        elif t1d=="DOWNTREND" and t4h=="DOWNTREND": direction="SELL"
-        signal="WAIT"; plan={"state":"NONE"}
-        if direction=="NONE": reason="1D and 4H trends not aligned - Main Trend WAIT"
-        elif adx<18: reason=f"Main Trend {direction}, but ADX {adx:.1f} below 18"
-        elif not (25<rsi<75): reason=f"Main Trend {direction}, but RSI {rsi:.1f} outside 25-75"
-        else:
-            plan=retest_state(direction,frames["1h"],support,resistance,live_price); lv=f"{plan['level_name']} ({plan['level']:.8g})"; st=plan["state"]
-            if st=="CONFIRMED": signal=direction; reason=f"Main Trend {direction}. Retest of {lv} + bounce confirmed. RR 1:{RR:g}"
-            elif st=="ZONE": signal="ALERT"; reason=f"Main Trend {direction}. Price in retest zone of {lv} - waiting for bounce candle"
-            elif st=="RISK": reason=f"Bounce at {lv} confirmed, but SL wider than {MAX_RISK_ATR:g} ATR - skip"
-            elif st=="MOVED": reason=f"Bounce at {lv} confirmed, but price already moved over {MAX_MOVE_ATR:g} ATR - skip"
-            else: reason=f"Main Trend {direction}. Waiting for retest of {lv}"
+        # Balanced trend check - sirf info, block nahi karega
+        # BUY side
+        buy_levels=[check_level("BUY",frames["1h"],float(hourly["EMA20"]),"1H EMA20",live_price),check_level("BUY",frames["1h"],float(hourly["EMA50"]),"1H EMA50",live_price),check_level("BUY",frames["1h"],support,"4H Support",live_price)]
+        sell_levels=[check_level("SELL",frames["1h"],float(hourly["EMA20"]),"1H EMA20",live_price),check_level("SELL",frames["1h"],float(hourly["EMA50"]),"1H EMA50",live_price),check_level("SELL",frames["1h"],resistance,"4H Resistance",live_price)]
+        best_buy=min(buy_levels,key=lambda x: x["dist_atr"]); best_sell=min(sell_levels,key=lambda x: x["dist_atr"])
+        # Balanced score - 0 se 6 tak
+        buy_score=0; sell_score=0
+        if t1d=="UPTREND": buy_score+=1
+        if t4h=="UPTREND": buy_score+=1
+        if t1h=="UPTREND": buy_score+=1
+        if t1d=="DOWNTREND": sell_score+=1
+        if t4h=="DOWNTREND": sell_score+=1
+        if t1h=="DOWNTREND": sell_score+=1
+        if adx>=15: buy_score+=0.5; sell_score+=0.5
+        if 30<=rsi<=70: buy_score+=0.5; sell_score+=0.5
         macd_state="Bullish" if hourly["MACD"]>hourly["MACD_SIGNAL"] else "Bearish"; have_obv=pd.notna(hourly["OBV"]) and pd.notna(hourly["OBV_MA"]); obv_state=("Rising" if hourly["OBV"]>hourly["OBV_MA"] else "Falling") if have_obv else "Unavailable"
         have_vol=pd.notna(hourly["VOL_AVG"]); vol_state=("Above Average" if hourly["volume"]>hourly["VOL_AVG"] else "Below Average") if have_vol else "Unavailable"
         boll="Upper Band" if live_price>=hourly["BB_UPPER"] else "Lower Band" if live_price<=hourly["BB_LOWER"] else "Inside Bands"; source=sources[0] if len(set(sources))==1 else "Mixed sources"
-        return {"name":name,"symbol":display_symbol,"signal":signal,"direction":direction,"price":live_price,"candle_price":candle_price,"live_source":live_source,"plan":plan,"trend_1d":t1d,"trend_4h":t4h,"trend_1h":t1h,"rsi":rsi,"adx":adx,"macd":macd_state,"obv":obv_state,"volume":vol_state,"bollinger":boll,"pattern":pattern,"structure":structure,"support":support,"resistance":resistance,"atr":atr,"reason":reason,"source":source,"timestamp":timestamp}
+        return {"name":name,"symbol":display_symbol,"price":live_price,"candle_price":candle_price,"live_source":live_source,"trend_1d":t1d,"trend_4h":t4h,"trend_1h":t1h,"rsi":rsi,"adx":adx,"macd":macd_state,"obv":obv_state,"volume":vol_state,"bollinger":boll,"pattern":pattern,"structure":structure,"support":support,"resistance":resistance,"atr":atr,"source":source,"timestamp":timestamp,"buy_levels":buy_levels,"sell_levels":sell_levels,"best_buy":best_buy,"best_sell":best_sell,"buy_score":buy_score,"sell_score":sell_score}
     except Exception as exc:
-        logging.exception("Analysis failed for %s",name); return {"name":name,"symbol":symbol or METALS.get(name,{}).get("symbol","N/A"),"signal":"DATA ERROR","error":str(exc)}
+        logging.exception("Analysis failed for %s",name); return {"name":name,"symbol":symbol or METALS.get(name,{}).get("symbol","N/A"),"error":str(exc)}
 def fmt(v): return "Not available" if v is None else f"{v:.8g}"
 def format_result(r):
-    if r.get("error"): return f"⚠️ DATA ERROR — {r['name']} ({r['symbol']})\nReason: {r['error']}\nThis is NOT a market WAIT signal."
+    if r.get("error"): return f"⚠️ DATA ERROR — {r['name']} ({r['symbol']})\nReason: {r['error']}"
     if r.get("closed"): return f"⚪ CLOSED — {r['name']} ({r['symbol']})\n{r['reason']}\nUpdated: {r['timestamp']}"
-    signal=r["signal"]; dot={"BUY":"🟢","SELL":"🔴","ALERT":"🟠","WAIT":"🟡"}.get(signal,"🟡"); plan=r["plan"]
-    zone=f"{plan['level_name']}: {fmt(plan['zone_low'])} - {fmt(plan['zone_high'])}" if plan.get("zone_low") is not None else "Not available"
-    levels=f"Entry: {fmt(plan['entry'])}\nSL: {fmt(plan['sl'])}\nTP: {fmt(plan['tp'])}" if plan.get("state")=="CONFIRMED" else "Entry / SL / TP: only after retest + bounce is confirmed"
-    return f"{dot} {signal} — {r['name']} ({r['symbol']})\n━━━━━━━━━━━━━━━━━━\nLive Price: {fmt(r['price'])}\nLast Closed 1H: {fmt(r['candle_price'])}\n━━━━━━━━━━━━━━━━━━\nMain Direction: {r['direction']}\nRetest Zone: {zone}\n{levels}\n━━━━━━━━━━━━━━━━━━\n1D: {r['trend_1d']} (Main)\n4H: {r['trend_4h']} (Main)\n1H: {r['trend_1h']} (Entry)\nRSI: {r['rsi']:.2f} | ADX: {r['adx']:.2f}\nMACD: {r['macd']} | OBV: {r['obv']}\nVolume: {r['volume']} | Bollinger: {r['bollinger']}\nCandle: {r['pattern']}\nStructure: {r['structure']}\n4H Support: {fmt(r['support'])} | Resistance: {fmt(r['resistance'])}\nData: {r['source']} | Live: {r['live_source']}\nReason: {r['reason']}\nUpdated: {r['timestamp']}\nPreliminary scanner only — manual checklist review required.\nNo automatic order execution."
+    bb=r["best_buy"]; ss=r["best_sell"]
+    # Entry levels sirf info ke liye - faisla aapka
+    def lvl_txt(x):
+        return f"{x['level_name']}: {fmt(x['zone_low'])} - {fmt(x['zone_high'])} | {x['state']} | Distance: {x['dist_atr']:.2f} ATR"
+    return f"📊 CHECK — {r['name']} ({r['symbol']})\n━━━━━━━━━━━━━━━━━━\nLive Price: {fmt(r['price'])}\nLast Closed 1H: {fmt(r['candle_price'])}\n━━━━━━━━━━━━━━━━━━\n1D: {r['trend_1d']}\n4H: {r['trend_4h']}\n1H: {r['trend_1h']}\nRSI: {r['rsi']:.2f} | ADX: {r['adx']:.2f}\nMACD: {r['macd']} | OBV: {r['obv']}\nVolume: {r['volume']} | Bollinger: {r['bollinger']}\nCandle: {r['pattern']}\nStructure: {r['structure']}\n4H Support: {fmt(r['support'])} | Resistance: {fmt(r['resistance'])}\n━━━━━━━━━━━━━━━━━━\n🟢 BUY SIDE CHECK (Score {r['buy_score']}/4):\n{lvl_txt(bb)}\n🔴 SELL SIDE CHECK (Score {r['sell_score']}/4):\n{lvl_txt(ss)}\n━━━━━━━━━━━━━━━━━━\nData: {r['source']} | Live: {r['live_source']}\nUpdated: {r['timestamp']}\nBot faisla nahi dega - Entry aap apne points se check karo.\nNo automatic order execution."
 def scan_all(chat_id=None):
     results=[]
     for name,symbol in list(COINS.items()):
         if name in METALS or symbol in BLOCKED: continue
         results.append(format_result(analyze_coin(name,symbol))); time.sleep(0.15)
     for name in METALS.keys(): results.append(format_result(analyze_coin(name,None)))
-    header="📊 KHATTAK LIVE MARKET SCANNER\nHourly market report\nCrypto + Gold + Silver — no automatic trading.\n\n"
+    header="📊 KHATTAK LIVE MARKET CHECK\nHourly market check - Crypto + Gold\nBot sirf check karega, faisla aapka.\n\n"
     if not results: results.append("No coins available.")
     send_long_message(header+"\n\n".join(results),chat_id=chat_id)
 def find_symbol(ticker):
@@ -265,7 +256,7 @@ def add_coin(ticker):
     ticker=ticker.upper().strip()
     if not ticker or len(ticker)>30: return "Invalid coin name."
     if ticker in METALS: return f"{ticker} already included as metal."
-    if ticker in BLOCKED: return "Use GOLD / SILVER for metals."
+    if ticker in BLOCKED: return "Use GOLD for metals."
     if ticker in COINS: return f"{ticker} is already in the list."
     symbol=find_symbol(ticker)
     if not symbol: return f"Could not verify a live USDT market for {ticker}."
@@ -274,7 +265,7 @@ def add_coin(ticker):
     COINS[ticker]=symbol; save_coins(COINS); return f"✅ {ticker} added successfully as {symbol}."
 def remove_coin(ticker):
     ticker=ticker.upper().strip()
-    if ticker in METALS: return "GOLD / SILVER are built-in and cannot be removed."
+    if ticker in METALS: return "GOLD is built-in and cannot be removed."
     for name,symbol in list(COINS.items()):
         if name==ticker or symbol==ticker: del COINS[name]; save_coins(COINS); return f"✅ {name} removed."
     return f"{ticker} is not in the list."
@@ -282,8 +273,8 @@ def handle_command(text,chat_id=None):
     parts=text.strip().split()
     if not parts: return "Use /help to see commands."
     cmd=parts[0].split("@")[0].lower()
-    if cmd=="/start": return "✅ KHATTAK LIVE SCANNER is online.\nMain Trend: 1D + 4H | Entry: 1H retest + bounce\nCrypto + Gold + Silver configured.\nUse /help for commands."
-    if cmd=="/help": return "KHATTAK LIVE SCANNER COMMANDS\n\n/start — Bot status\n/scan — Scan all\n/scan BTC — Scan one coin\n/scan GOLD — Scan Gold\n/scan SILVER — Scan Silver\n/check BTC — Scan one coin\n/add PEPE — Add a coin\n/remove PEPE — Remove a coin\n/list — Show coin list\n/help — Help\n\nSignals: 🟢 BUY / 🔴 SELL = retest + bounce confirmed\n🟠 ALERT = price in retest zone, waiting for bounce\n🟡 WAIT = no setup\nBot does not execute trades."
+    if cmd=="/start": return "✅ KHATTAK LIVE CHECKER is online.\nBot sirf check karega, faisla aapka.\nCrypto + Gold configured.\nUse /help for commands."
+    if cmd=="/help": return "KHATTAK LIVE CHECKER COMMANDS\n\n/start — Bot status\n/scan — Scan all\n/scan BTC — Scan one coin\n/scan GOLD — Scan Gold\n/check BTC — Scan one coin\n/add PEPE — Add a coin\n/remove PEPE — Remove a coin\n/list — Show coin list\n/help — Help\n\nBot BUY/SELL nahi bolega, sirf CHECK dega.\nEntry aap apne points se check karo."
     if cmd=="/list": return "\n".join(["📋 COIN LIST"]+[f"{k}: {v}" for k,v in COINS.items()]+[f"{k}: {v['symbol']} ({v['provider']})" for k,v in METALS.items()])
     if cmd=="/add": return add_coin(parts[1]) if len(parts)>1 else "Usage: /add PEPE"
     if cmd=="/remove": return remove_coin(parts[1]) if len(parts)>1 else "Usage: /remove PEPE"
@@ -291,7 +282,7 @@ def handle_command(text,chat_id=None):
         if cmd=="/check" and len(parts)<2: return "Usage: /check BTC"
         if len(parts)>=2:
             ticker=parts[1].upper().strip()
-            if ticker in BLOCKED: return "Use GOLD / SILVER."
+            if ticker in BLOCKED: return "Use GOLD."
             def do_single():
                 target=chat_id or CHAT_ID
                 if ticker in METALS: result=analyze_coin(ticker,None)
@@ -300,11 +291,11 @@ def handle_command(text,chat_id=None):
                     if not symbol: send_message(f"Could not verify a live USDT market for {ticker}.",chat_id=target); return
                     result=analyze_coin(ticker,symbol)
                 send_message(format_result(result),chat_id=target)
-            threading.Thread(target=do_single,daemon=True).start(); return f"🔄 Scanning {ticker}... Result will arrive shortly."
-        threading.Thread(target=lambda: scan_all(chat_id),daemon=True).start(); return "🔄 Full market scan started. Gold/Silver take ~1 minute (API limit)."
+            threading.Thread(target=do_single,daemon=True).start(); return f"🔄 Checking {ticker}... Result will arrive shortly."
+        threading.Thread(target=lambda: scan_all(chat_id),daemon=True).start(); return "🔄 Full market check started."
     return "Unknown command. Use /help."
 @app.route("/",methods=["GET"])
-def home(): return jsonify({"status":"ok","service":"KHATTAK LIVE SCANNER","crypto_count":len(COINS),"metals":list(METALS.keys())}),200
+def home(): return jsonify({"status":"ok","service":"KHATTAK LIVE CHECKER","crypto_count":len(COINS),"metals":list(METALS.keys())}),200
 @app.route("/health",methods=["GET"])
 def health(): return jsonify({"status":"ok"}),200
 @app.route("/webhook",methods=["POST"])
