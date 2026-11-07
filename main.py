@@ -8,10 +8,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHAT_ID = os.getenv("CHAT_ID", "")
 PORT = int(os.getenv("PORT", "10000"))
-TWELVE_DATA_API_KEY = os.getenv(
-    "TWELVE_DATA_API_KEY",
-    "02cc28c647014ed390683041910bb568"
-)
+# Render variable is used if present; otherwise the key below is used.
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "") or "02cc28c647014ed390683041910bb568"
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 STATE_FILE = "coins.json"
@@ -21,14 +19,15 @@ BYBIT = "https://api.bybit.com"
 TWELVE_DATA = "https://api.twelvedata.com"
 
 TIMEFRAMES = {"1d": "1day", "4h": "4h", "1h": "1h"}
-MIN_SCORE = 4
-MIN_MARGIN = 2
+MIN_SCORE = 5   # kam karoge to zyada BUY/SELL, zyada karoge to zyada WAIT
+MIN_MARGIN = 3  # BUY aur SELL ke score me kam az kam itna farq
 RR = 2.0
 ZONE_ATR = 0.5
 SL_BUFFER_ATR = 0.8
 MAX_RISK_ATR = 3.0
 MAX_MOVE_ATR = 1.0
 TD_MIN_GAP = 8.0
+WAIT_MAX_HOURS = 24
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +36,7 @@ logging.basicConfig(
 
 app = Flask(__name__)
 session = requests.Session()
-session.headers.update({"User-Agent": "Khattak-Live-Scanner/5.1"})
+session.headers.update({"User-Agent": "Khattak-Live-Scanner/5.2"})
 
 DEFAULT_COINS = {
     "BTC": "BTCUSDT", "ETH": "ETHUSDT", "BNB": "BNBUSDT",
@@ -47,6 +46,14 @@ DEFAULT_COINS = {
 }
 METALS = {"GOLD": {"symbol": "XAU/USD", "provider": "Twelve Data"}}
 BLOCKED = {"XAUUSDT", "XAUUSD", "XAGUSDT", "XAGUSD", "SILVER", "XAG/USD", "XAG"}
+
+
+def safe(msg):
+    """Never let the API key appear in Telegram messages or logs."""
+    s = str(msg)
+    if TWELVE_DATA_API_KEY:
+        s = s.replace(TWELVE_DATA_API_KEY, "***")
+    return s
 
 
 def send_message(m, chat_id=None):
@@ -62,7 +69,7 @@ def send_message(m, chat_id=None):
         r.raise_for_status()
         return True
     except Exception:
-        logging.exception("Telegram send")
+        logging.error("Telegram send failed")
         return False
 
 
@@ -103,30 +110,117 @@ def load_coins():
 
 COINS = load_coins()
 
+# ---------------- WAIT TRACKING ----------------
+_waits_lock = threading.RLock()
+
 
 def load_waits():
-    try:
-        with open(WAITS_FILE, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except Exception:
-        return {}
+    with _waits_lock:
+        try:
+            with open(WAITS_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
 
 
 def save_waits(d):
-    try:
-        with open(WAITS_FILE, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2)
-    except Exception:
-        logging.exception("Could not save waits file")
+    with _waits_lock:
+        try:
+            with open(WAITS_FILE, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2)
+        except Exception:
+            logging.exception("Could not save waits file")
 
+
+def upsert_wait(name, info):
+    """Save a WAIT. If the same direction is already waiting, keep its original start time."""
+    with _waits_lock:
+        w = load_waits()
+        old = w.get(name)
+        if old and old.get("direction") == info.get("direction"):
+            info["created"] = old.get("created", info["created"])
+            info["time"] = old.get("time", info["time"])
+        w[name] = info
+        save_waits(w)
+
+
+def remove_wait(name):
+    with _waits_lock:
+        w = load_waits()
+        if name in w:
+            del w[name]
+            save_waits(w)
+
+
+def handle_wait_result(name, res, chat_id=None):
+    """Compare a fresh analysis with a pending WAIT: confirm, cancel, or keep waiting."""
+    info = load_waits().get(name)
+    if not info:
+        return
+    sig = res.get("signal")
+
+    if sig in ("BUY", "SELL"):
+        if sig == info.get("direction"):
+            send_message(
+                f"✅ PREVIOUS WAIT NOW CONFIRMED — {name}\n"
+                f"(WAIT was sent: {info.get('time')})\n\n" + format_result(res),
+                chat_id=chat_id
+            )
+        remove_wait(name)
+        return
+
+    if sig == "DATA ERROR" or res.get("closed"):
+        return
+
+    try:
+        created = datetime.fromisoformat(info.get("created", ""))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    except Exception:
+        created = datetime.now(timezone.utc)
+
+    if datetime.now(timezone.utc) - created > timedelta(hours=WAIT_MAX_HOURS):
+        remove_wait(name)
+        send_message(
+            f"❌ WAIT CANCELLED — {name}\n"
+            f"Reason: {WAIT_MAX_HOURS} ghante tak confirm nahi hua.",
+            chat_id=chat_id
+        )
+        return
+
+    live, sl = res.get("price"), info.get("pot_sl")
+    if live and sl:
+        if info.get("direction") == "BUY" and live < sl:
+            remove_wait(name)
+            send_message(
+                f"❌ WAIT CANCELLED — {name}\n"
+                f"Reason: Price SL {sl:.8g} se neeche chali gayi.",
+                chat_id=chat_id
+            )
+        elif info.get("direction") == "SELL" and live > sl:
+            remove_wait(name)
+            send_message(
+                f"❌ WAIT CANCELLED — {name}\n"
+                f"Reason: Price SL {sl:.8g} se upar chali gayi.",
+                chat_id=chat_id
+            )
+
+
+# ---------------- DATA ----------------
 
 def get_json(url, params=None):
     r = session.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    d = r.json()
+    try:
+        d = r.json()
+    except Exception:
+        d = None
+    # show the provider's own message (e.g. Twelve Data plan / limit errors)
     if isinstance(d, dict) and d.get("status") == "error":
         raise RuntimeError(d.get("message", "Provider error"))
+    r.raise_for_status()
+    if d is None:
+        d = r.json()
     if isinstance(d, dict) and d.get("retCode", 0) not in (0, "0"):
         raise RuntimeError(d.get("retMsg", "Bybit provider error"))
     return d
@@ -221,7 +315,7 @@ def get_metal_klines(tf, outputsize=250):
             logging.info("GOLD %s: Success %s/%s", tf, sym, ex)
             return df.reset_index(drop=True), f"Twelve Data ({sym}/{ex})"
         except Exception as e:
-            errs.append(f"{sym}/{ex}: {str(e)[:150]}")
+            errs.append(f"{sym}/{ex}: {safe(e)[:150]}")
     raise RuntimeError(f"GOLD {tf}: All failed. " + " | ".join(errs))
 
 
@@ -240,7 +334,7 @@ def get_metal_live():
                 raise RuntimeError("Invalid live price")
             return pr, f"Twelve Data live ({sym}/{ex})"
         except Exception as e:
-            errs.append(f"{sym}/{ex}: {str(e)[:150]}")
+            errs.append(f"{sym}/{ex}: {safe(e)[:150]}")
     raise RuntimeError("GOLD live price unavailable. " + " | ".join(errs))
 
 
@@ -287,6 +381,8 @@ def get_klines(sym, tf, limit=250):
             logging.warning("%s failed %s %s: %s", src, sym, tf, e)
     raise RuntimeError("No reliable market data source.")
 
+
+# ---------------- INDICATORS ----------------
 
 def calc(df):
     df = df.copy()
@@ -487,13 +583,29 @@ def retest(direction, h1, support, resistance, live):
 
     if inzone:
         _, n, lvl = min(inzone)
-        out.update(level_name=n, level=lvl, zone_low=lvl-tol, zone_high=lvl+tol)
+        out.update(state="ZONE", level_name=n, level=lvl, zone_low=lvl-tol, zone_high=lvl+tol)
         return out
 
     n, lvl = min(levels.items(), key=lambda kv: abs(live-kv[1]))
     out.update(level_name=n, level=lvl, zone_low=lvl-tol, zone_high=lvl+tol)
     return out
 
+
+def trade_plan(direction, h1, live, atr):
+    """Entry = current price. SL beyond the last 5 candles' extreme, kept between 1 and MAX_RISK_ATR ATR."""
+    recent = h1.tail(5)
+    entry = float(live)
+    if direction == "BUY":
+        risk = entry - (float(recent["low"].min()) - 0.3*atr)
+    else:
+        risk = (float(recent["high"].max()) + 0.3*atr) - entry
+    risk = min(max(risk, 1.0*atr), MAX_RISK_ATR*atr)
+    if direction == "BUY":
+        return {"state": "TRADE", "entry": entry, "sl": entry-risk, "tp": entry+RR*risk}
+    return {"state": "TRADE", "entry": entry, "sl": entry+risk, "tp": entry-RR*risk}
+
+
+# ---------------- ANALYSIS ----------------
 
 def analyze_coin(name, symbol=None):
     try:
@@ -613,15 +725,10 @@ def analyze_coin(name, symbol=None):
         signal = "WAIT"
         plan = {"state": "NONE"}
         wait_dir = direction if direction != "NONE" else "NONE"
+        opp = sell if direction == "BUY" else buy
 
         if direction == "NONE":
             reason = "WAIT - BUY aur SELL dono barabar hain, koi saaf direction nahi"
-        elif score < MIN_SCORE or margin < MIN_MARGIN:
-            reason = f"WAIT - {direction} ka score {score} hai, margin {margin} hai, kaafi saboot nahi hain"
-        elif adx < 12:
-            reason = f"WAIT - Main Trend {direction} hai, lekin ADX me taqat nahi ({adx:.1f})"
-        elif not (20 < rsi < 80):
-            reason = f"WAIT - Main Trend {direction} hai, lekin RSI bahut zyada upar/neeche ({rsi:.1f})"
         else:
             plan = retest(direction, frames["1h"], support, resistance, live)
             lv = (
@@ -629,71 +736,61 @@ def analyze_coin(name, symbol=None):
                 if plan.get("level") is not None else "Level nahi mila"
             )
             st = plan["state"]
+            score_ok = score >= MIN_SCORE and margin >= MIN_MARGIN
+            adx_ok = adx >= 12
+            rsi_ok = 20 < rsi < 80
 
-            if st == "CONFIRMED":
-                w = load_waits()
-                if name in w:
-                    del w[name]
-                    save_waits(w)
+            if score_ok and adx_ok and rsi_ok:
+                # ---- enough evidence: give the signal (retest is a bonus, not a must) ----
                 signal = direction
-                reason = (
-                    f"{direction} CONFIRMED - Retest {lv} se bounce confirm, "
-                    f"RR 1:{RR:g}, Confidence {conf}"
-                )
-
-            elif st == "ZONE":
-                signal = "WAIT"
-                reason = (
-                    f"WAIT - {direction} ka Trend hai, lekin Price abhi "
-                    f"Retest Zone {lv} ke andar hai, bounce wali candle ka wait karo"
-                )
-                plan.update(
-                    pot_entry=plan["level"],
-                    pot_sl=(
-                        plan["level"]-SL_BUFFER_ATR*atr
-                        if direction == "BUY"
-                        else plan["level"]+SL_BUFFER_ATR*atr
+                if st == "CONFIRMED":
+                    plan["retest_ok"] = True
+                    reason = (
+                        f"{direction} CONFIRMED - Retest {lv} se bounce confirm, "
+                        f"RR 1:{RR:g}, Confidence {conf}"
                     )
-                )
-
-            elif st == "RISK":
-                signal = "WAIT"
-                reason = f"WAIT - Bounce {lv} par confirm hua, lekin SL bahut door hai"
-
-            elif st == "MOVED":
-                signal = "WAIT"
-                reason = f"WAIT - Bounce {lv} par confirm hua, lekin Price pehle hi zyada move kar chuka hai"
-
+                else:
+                    plan = trade_plan(direction, frames["1h"], live, atr)
+                    plan["retest_ok"] = False
+                    reason = (
+                        f"{direction} - Saboot kaafi hain (score {score} vs {opp}). "
+                        f"Retest ka wait nahi kiya, Entry abhi ki price par, Confidence {conf}"
+                    )
             else:
-                signal = "WAIT"
-                reason = (
-                    f"WAIT - Main Trend {direction} hai. Abhi Price {live:.8g} hai, "
-                    f"Retest Point {lv} hai. Price wahan aaye to confirm hoga to Trade lena hai"
-                )
-                pe = plan["level"]
-                ps = pe-SL_BUFFER_ATR*atr if direction == "BUY" else pe+SL_BUFFER_ATR*atr
-                pr = abs(pe-ps)
-                pt = pe+RR*pr if direction == "BUY" else pe-RR*pr
-                plan.update(pot_entry=pe, pot_sl=ps, pot_tp=pt)
-
-            if signal == "WAIT" and direction != "NONE" and plan.get("level") is not None:
-                w = load_waits()
-                w[name] = {
-                    "direction": direction,
-                    "level": float(plan["level"]),
-                    "zone_low": float(plan["zone_low"]) if plan.get("zone_low") is not None else None,
-                    "zone_high": float(plan["zone_high"]) if plan.get("zone_high") is not None else None,
-                    "pot_entry": float(plan.get("pot_entry") or plan["level"]),
-                    "pot_sl": float(plan.get("pot_sl") or 0),
-                    "pot_tp": float(plan.get("pot_tp") or 0),
-                    "support": float(support),
-                    "resistance": float(resistance),
-                    "s1": float(s1), "s2": float(s2),
-                    "r1": float(r1), "r2": float(r2),
-                    "time": ts,
-                    "created": datetime.now(timezone.utc).isoformat()
-                }
-                save_waits(w)
+                # ---- not enough evidence: WAIT with a possible plan ----
+                why = []
+                if score < MIN_SCORE or margin < MIN_MARGIN:
+                    why.append(f"{direction} ka score {score} vs {opp} hai (chahiye {MIN_SCORE}+ aur {MIN_MARGIN} ka farq)")
+                if not adx_ok:
+                    why.append(f"ADX me taqat nahi ({adx:.1f})")
+                if not rsi_ok:
+                    why.append(f"RSI bahut zyada upar/neeche ({rsi:.1f})")
+                if st == "ZONE":
+                    why.append(f"Price Retest Zone {lv} ke andar hai, bounce wali candle ka wait karo")
+                elif plan.get("level") is not None:
+                    why.append(f"Retest Point {lv} hai, Price abhi {live:.8g} par hai")
+                reason = f"WAIT - Main Trend {direction}. " + " | ".join(why)
+                if plan.get("level") is not None:
+                    pe = plan["level"]
+                    ps = pe-SL_BUFFER_ATR*atr if direction == "BUY" else pe+SL_BUFFER_ATR*atr
+                    pr = abs(pe-ps)
+                    pt = pe+RR*pr if direction == "BUY" else pe-RR*pr
+                    plan.update(pot_entry=pe, pot_sl=ps, pot_tp=pt)
+                    upsert_wait(name, {
+                        "direction": direction,
+                        "level": float(plan["level"]),
+                        "zone_low": float(plan["zone_low"]) if plan.get("zone_low") is not None else None,
+                        "zone_high": float(plan["zone_high"]) if plan.get("zone_high") is not None else None,
+                        "pot_entry": float(pe),
+                        "pot_sl": float(ps),
+                        "pot_tp": float(pt),
+                        "support": float(support),
+                        "resistance": float(resistance),
+                        "s1": float(s1), "s2": float(s2),
+                        "r1": float(r1), "r2": float(r2),
+                        "time": ts,
+                        "created": datetime.now(timezone.utc).isoformat()
+                    })
 
         macd_s = "Bullish" if h1["MACD"] > h1["MACD_SIGNAL"] else "Bearish"
         obv_s = (
@@ -728,12 +825,12 @@ def analyze_coin(name, symbol=None):
         }
 
     except Exception as exc:
-        logging.exception("Analysis failed %s", name)
+        logging.error("Analysis failed %s: %s", name, safe(exc))
         return {
             "name": name,
             "symbol": symbol or METALS.get(name, {}).get("symbol", "N/A"),
             "signal": "DATA ERROR",
-            "error": str(exc)
+            "error": safe(exc)
         }
 
 
@@ -772,8 +869,8 @@ def format_result(r):
             f"Abhi Price: {fmt(r['price'])}\n"
             f"Support S1: {fmt(r['s1'])} | S2: {fmt(r['s2'])}\n"
             f"Resistance R1: {fmt(r['r1'])} | R2: {fmt(r['r2'])}\n"
-            f"Retest Level: {zone}\n"
-            f"Entry: {fmt(plan.get('entry'))}\n"
+            + (f"Retest Level: {zone}\n" if plan.get("retest_ok") else "Retest: nahi hua (trend + indicators se signal)\n")
+            + f"Entry: {fmt(plan.get('entry'))}\n"
             f"SL: {fmt(plan.get('sl'))}\n"
             f"TP: {fmt(plan.get('tp'))}\n"
             f"Confidence: {r.get('confidence')} | "
@@ -823,75 +920,19 @@ def format_result(r):
     )
 
 
+# ---------------- SCANNING ----------------
+
 def check_waits(chat_id=None):
-    w = load_waits()
-    if not w:
-        return
-
-    changed = False
-
-    for name, info in list(w.items()):
+    """Runs every 15 minutes: re-check each pending WAIT."""
+    for name in list(load_waits().keys()):
         try:
-            created = (
-                datetime.fromisoformat(info.get("created", "")).replace(tzinfo=timezone.utc)
-                if info.get("created")
-                else datetime.now(timezone.utc)
-            )
-
-            if datetime.now(timezone.utc)-created > timedelta(hours=24):
-                del w[name]
-                changed = True
-                send_message(
-                    f"❌ WAIT CANCELLED — {name}\n"
-                    "Reason: 24 ghante tak confirm nahi hua.",
-                    chat_id=chat_id
-                )
-                continue
-
             sym = COINS.get(name) if name not in METALS else None
             if name not in METALS and not sym:
                 continue
-
             res = analyze_coin(name, sym)
-
-            if res.get("signal") in ("BUY", "SELL"):
-                del w[name]
-                changed = True
-                send_message(
-                    f"✅ PREVIOUS WAIT NOW CONFIRMED — {name}\n\n" + format_result(res),
-                    chat_id=chat_id
-                )
-
-            elif res.get("signal") == "DATA ERROR":
-                continue
-
-            else:
-                live = res.get("price")
-
-                if live and info.get("pot_sl"):
-                    if info["direction"] == "BUY" and live < info["pot_sl"]:
-                        del w[name]
-                        changed = True
-                        send_message(
-                            f"❌ WAIT CANCELLED — {name}\n"
-                            f"Reason: Price SL {info['pot_sl']:.8g} se neeche chali gayi.",
-                            chat_id=chat_id
-                        )
-
-                    elif info["direction"] == "SELL" and live > info["pot_sl"]:
-                        del w[name]
-                        changed = True
-                        send_message(
-                            f"❌ WAIT CANCELLED — {name}\n"
-                            f"Reason: Price SL {info['pot_sl']:.8g} se upar chali gayi.",
-                            chat_id=chat_id
-                        )
-
+            handle_wait_result(name, res, chat_id)
         except Exception:
             logging.exception("check_waits %s", name)
-
-    if changed:
-        save_waits(w)
 
 
 def scan_all(chat_id=None):
@@ -902,6 +943,7 @@ def scan_all(chat_id=None):
             continue
 
         r = analyze_coin(name, sym)
+        handle_wait_result(name, r, chat_id)
 
         if r.get("signal") == "DATA ERROR" and "GRAM" in name:
             results.append(
@@ -914,7 +956,9 @@ def scan_all(chat_id=None):
         time.sleep(0.15)
 
     for name in METALS.keys():
-        results.append(format_result(analyze_coin(name, None)))
+        r = analyze_coin(name, None)
+        handle_wait_result(name, r, chat_id)
+        results.append(format_result(r))
 
     hdr = (
         "📊 KHATTAK LIVE MARKET SCANNER\n"
@@ -926,7 +970,6 @@ def scan_all(chat_id=None):
         results.append("No coins available.")
 
     send_long(hdr + "\n\n".join(results), chat_id=chat_id)
-    check_waits(chat_id)
 
 
 def find_symbol(t):
@@ -992,6 +1035,7 @@ def remove_coin(t):
         if n == t or s == t:
             del COINS[n]
             save_coins(COINS)
+            remove_wait(n)
             return f"✅ {n} removed."
 
     return f"{t} is not in the list."
@@ -1008,7 +1052,7 @@ def handle_command(text, chat_id=None):
     if cmd == "/start":
         return (
             "✅ KHATTAK LIVE SCANNER is online.\n"
-            "Main Trend: 1D + 4H | Entry: 1H retest + bounce\n"
+            "Trend: 1D + 4H + 1H | S/R: 4H | Entry: 1H\n"
             "Crypto + Gold configured.\n"
             "Use /help for commands."
         )
@@ -1026,8 +1070,8 @@ def handle_command(text, chat_id=None):
             "/list — Show coin list\n"
             "/waits — Show pending WAITs\n"
             "/help — Help\n\n"
-            "Signals: 🟢 BUY / 🔴 SELL = retest + bounce confirmed\n"
-            "🟡 WAIT = no setup, possible direction + zone given\n"
+            "Signals: 🟢 BUY / 🔴 SELL = enough evidence (retest is a bonus)\n"
+            "🟡 WAIT = not enough evidence, possible direction + zone given\n"
             "Bot does not execute trades."
         )
 
@@ -1085,6 +1129,7 @@ def handle_command(text, chat_id=None):
 
                     res = analyze_coin(tk, s)
 
+                handle_wait_result(tk, res, tg)
                 send_message(format_result(res), chat_id=tg)
 
             threading.Thread(target=do_single, daemon=True).start()
