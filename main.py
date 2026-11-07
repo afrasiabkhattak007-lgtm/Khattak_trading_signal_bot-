@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 from apscheduler.schedulers.background import BackgroundScheduler
 BOT_TOKEN=os.getenv("BOT_TOKEN",""); CHAT_ID=os.getenv("CHAT_ID","")
-PORT=int(os.getenv("PORT","10000")); TWELVE_DATA_API_KEY=os.getenv("TWELVE_DATA_API_KEY","")
+PORT=int(os.getenv("PORT","10000")); TWELVE_DATA_API_KEY=os.getenv("TWELVE_DATA_API_KEY"03f82d4c87bc4a9f98ea244d626b25ec"")
 TELEGRAM_API=f"https://api.telegram.org/bot{BOT_TOKEN}"; STATE_FILE="coins.json"; WAITS_FILE="waits.json"
 BINANCE_SPOT="https://data-api.binance.vision"; BYBIT="https://api.bybit.com"; TWELVE_DATA="https://api.twelvedata.com"
 TIMEFRAMES={"1d":"1day","4h":"4h","1h":"1h"}
