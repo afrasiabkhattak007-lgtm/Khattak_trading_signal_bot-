@@ -1,6 +1,5 @@
-Flask==3.0.3
-requests==2.32.3
-pandas==2.2.2
-numpy==1.26.4
-APScheduler==3.10.4
-gunicorn==22.0.0
+Flask==3.1.0
+requests==2.32.4
+pandas==2.3.2
+numpy==2.3.1
+APScheduler==3.11.0
