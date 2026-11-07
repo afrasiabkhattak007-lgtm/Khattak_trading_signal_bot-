@@ -1,6 +1,5 @@
-Flask
-requests
-pandas
-numpy
-APScheduler
-gunicorn
+Flask>=3.0
+requests>=2.31
+numpy>=1.26
+pandas>=2.1
+APScheduler>=3.10,<4
